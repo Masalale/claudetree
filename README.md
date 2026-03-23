@@ -66,20 +66,30 @@ claudetree is the tool I wished I had — a simple way to make session history u
 
 claudetree reads your Claude sessions directly from disk — no API, no cloud, no account.
 
+**All your sessions, one place.**
+
+When you use Claude Code in any directory — `~/projects/app`, `~/work/api`, `/tmp/quick-test` — it stores sessions in `~/.claude/projects/`. claudetree scans ALL of them:
+
 ```
 ~/.claude/
-├── projects/           ← where Claude stores your sessions (.jsonl files)
+├── projects/           ← sessions from EVERY project you've used Claude Code in
+│   ├── -home-you-app/     (~/app)
+│   ├── -home-you-work-api/ (~/work/api)
+│   └── ...
 ├── session-names/      ← custom names you assign (persisted)
 └── trash/               ← soft-deleted sessions (restore anytime)
 ```
 
+So when you open claudetree, you're not just seeing sessions from the current directory — you're seeing your entire Claude Code history across every project on your machine.
+
 **What it does:**
 
-- Scans all your projects and lists every session with age, message count, and first message
-- Lets you **search inside session content** using ripgrep (not just titles)
-- Stores custom names you give sessions in `~/.claude/session-names/{project}.json`
-- Moves trashed sessions to `~/.claude/trash/` with metadata so you can restore them
-- When you hit Enter on a session, it exits and runs `claude --resume <id>`
+- Shows every session from every project — age, message count, first message
+- Search inside session content using ripgrep (not just titles)
+- Rename sessions with names that persist in `~/.claude/session-names/`
+- Trash sessions to `~/.claude/trash/` with metadata — restore anytime
+- Toggle `ctrl-a` to filter current directory vs all projects
+- When you hit Enter, it exits and runs `claude --resume <id>`
 
 **What it doesn't do:**
 

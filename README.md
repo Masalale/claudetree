@@ -1,7 +1,7 @@
 # claudetree
 
 > ## ⚠️ ALPHA — expect bugs, breaking changes, and rough edges
-> This project is in early development. Use at your own risk.
+> This project is in early development.
 
 **Ever spent 20 minutes trying to find that one Claude session?**
 

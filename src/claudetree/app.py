@@ -256,7 +256,7 @@ class _ContextBackdrop(Static):
 
     DEFAULT_CSS = """
     _ContextBackdrop {
-        layer: overlay;
+        layer: backdrop;
         display: none;
         width: 100%;
         height: 100%;
@@ -739,7 +739,7 @@ class BrowseScreen(Screen):
 
     DEFAULT_CSS = _SPLIT_CSS + """
     BrowseScreen {
-        layers: base overlay;
+        layers: base backdrop overlay;
     }
     #filter-bar {
         height: 3;
@@ -1021,7 +1021,7 @@ class ContentSearchScreen(Screen):
 
     DEFAULT_CSS = _SPLIT_CSS + """
     ContentSearchScreen {
-        layers: base overlay;
+        layers: base backdrop overlay;
     }
     ContentSearchScreen #search {
         height: 3;
@@ -1207,7 +1207,7 @@ class TrashScreen(Screen):
 
     DEFAULT_CSS = _SPLIT_CSS + """
     TrashScreen {
-        layers: base overlay;
+        layers: base backdrop overlay;
     }
     """
 
@@ -1354,7 +1354,8 @@ class ClaudetreeApp(App):
     CSS = """
     /* NOTE: do NOT set 'layers' on Screen globally — it breaks Screen.render()
        in Textual 8.x. Each screen that uses ContextMenuWidget declares its own
-       'layers: base overlay' in its DEFAULT_CSS. */
+       'layers: base backdrop overlay' in its DEFAULT_CSS.
+       backdrop < overlay ensures the dim layer never covers the menu. */
 
     Screen {
         background: $surface;

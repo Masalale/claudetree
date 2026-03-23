@@ -68,7 +68,19 @@ claudetree reads your Claude sessions directly from disk — no API, no cloud, n
 
 **All your sessions, one place.**
 
-When you use Claude Code in any directory — `~/projects/app`, `~/work/api`, `/tmp/quick-test` — it stores sessions in `~/.claude/projects/`. claudetree scans ALL of them:
+When you use Claude Code in any directory — `~/projects/app`, `~/work/api`, `/tmp/quick-test` — it stores sessions in `~/.claude/projects/`. claudetree scans ALL of them.
+
+**Works everywhere you use Claude Code:**
+
+- VS Code
+- VS Code Insiders
+- VSCodium
+- Antigravity
+- Cursor
+- Any VS Code fork
+- The CLI
+
+Same sessions, same storage (`~/.claude/projects/`). claudetree sees them all.
 
 ```
 ~/.claude/

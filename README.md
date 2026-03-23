@@ -1,5 +1,8 @@
 # claudetree
 
+> ## ⚠️ ALPHA — expect bugs, breaking changes, and rough edges
+> This project is in early development. Use at your own risk.
+
 **Ever spent 20 minutes trying to find that one Claude session?**
 
 I built claudetree because I was tired of losing context, opening the wrong chat, and repeating myself to Claude.

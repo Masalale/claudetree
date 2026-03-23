@@ -1,4 +1,5 @@
 """Claudetree Textual TUI — lazygit-style Claude Code session manager."""
+
 from __future__ import annotations
 
 import os
@@ -36,6 +37,7 @@ from .backend import (
 
 # ── Custom list items ─────────────────────────────────────────────────────────
 
+
 class SessionItem(ListItem):
     class RightClicked(Message):
         def __init__(self, session: Session, x: int, y: int) -> None:
@@ -64,11 +66,13 @@ class SessionItem(ListItem):
 
     def on_mouse_down(self, event) -> None:
         if event.button == 3:
-            self.post_message(self.RightClicked(
-                self.session,
-                self.region.x + event.x,
-                self.region.y + event.y,
-            ))
+            self.post_message(
+                self.RightClicked(
+                    self.session,
+                    self.region.x + event.x,
+                    self.region.y + event.y,
+                )
+            )
             event.stop()
 
 
@@ -95,15 +99,18 @@ class TrashItem(ListItem):
 
     def on_mouse_down(self, event) -> None:
         if event.button == 3:
-            self.post_message(self.RightClicked(
-                self.entry,
-                self.region.x + event.x,
-                self.region.y + event.y,
-            ))
+            self.post_message(
+                self.RightClicked(
+                    self.entry,
+                    self.region.x + event.x,
+                    self.region.y + event.y,
+                )
+            )
             event.stop()
 
 
 # ── Filter input ──────────────────────────────────────────────────────────────
+
 
 class FilterInput(Input):
     """Input that forwards ↑↓/Enter/screen-bindings, and handles escape locally."""
@@ -114,23 +121,40 @@ class FilterInput(Input):
     BINDINGS = [Binding("ctrl+a", "route_toggle_all", show=False)]
 
     _PASSTHROUGH = {
-        "ctrl+d", "ctrl+r", "ctrl+t", "ctrl+n", "ctrl+s",
-        "ctrl+underscore", "ctrl+slash", "ctrl+b",
+        "ctrl+d",
+        "ctrl+r",
+        "ctrl+t",
+        "ctrl+n",
+        "ctrl+s",
+        "ctrl+underscore",
+        "ctrl+slash",
+        "ctrl+b",
+        "ctrl+i",
+        "ctrl+g",
+        "alt+c",
+        "alt+r",
     }
 
     def action_route_toggle_all(self) -> None:
-        if hasattr(self.screen, "action_toggle_all"):
-            self.screen.action_toggle_all()
+        action_toggle_all = getattr(self.screen, "action_toggle_all", None)
+        if callable(action_toggle_all):
+            action_toggle_all()
 
     def on_key(self, event) -> None:
         if event.key == "down":
-            self.screen.move_list(1)
+            move_list = getattr(self.screen, "move_list", None)
+            if callable(move_list):
+                move_list(1)
             event.prevent_default()
         elif event.key == "up":
-            self.screen.move_list(-1)
+            move_list = getattr(self.screen, "move_list", None)
+            if callable(move_list):
+                move_list(-1)
             event.prevent_default()
         elif event.key == "enter":
-            self.screen.activate_list()
+            activate_list = getattr(self.screen, "activate_list", None)
+            if callable(activate_list):
+                activate_list()
             event.prevent_default()
         elif event.key == "escape":
             # Post Cancelled instead of letting escape reach screen's quit binding
@@ -142,7 +166,8 @@ class FilterInput(Input):
 
 # ── Modal dialogs ─────────────────────────────────────────────────────────────
 
-class InputDialog(ModalScreen):
+
+class InputDialog(ModalScreen[str | None]):
     """Single-input prompt dialog."""
 
     DEFAULT_CSS = """
@@ -162,12 +187,15 @@ class InputDialog(ModalScreen):
         color: $foreground;
     }
     #dialog-input {
-        background: $boost;
-        color: $foreground;
-        border: tall $border-blurred;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+        border: tall $primary 60%;
     }
     #dialog-input:focus {
-        border: tall $border;
+        background: $boost;
+        color: $text;
+        border: tall $primary;
     }
     """
 
@@ -194,7 +222,7 @@ class InputDialog(ModalScreen):
             self.dismiss(None)
 
 
-class ConfirmDialog(ModalScreen):
+class ConfirmDialog(ModalScreen[bool]):
     """Yes/No confirmation dialog."""
 
     DEFAULT_CSS = """
@@ -214,12 +242,15 @@ class ConfirmDialog(ModalScreen):
         color: $foreground;
     }
     #confirm-input {
-        background: $boost;
-        color: $foreground;
-        border: tall $border-blurred;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+        border: tall $warning 60%;
     }
     #confirm-input:focus {
-        border: tall $border;
+        background: $boost;
+        color: $text;
+        border: tall $warning;
     }
     """
 
@@ -230,8 +261,10 @@ class ConfirmDialog(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Label(escape(self._message))
-            yield Input(placeholder="type y + Enter to confirm, Escape cancels",
-                        id="confirm-input")
+            yield Input(
+                placeholder="type y + Enter to confirm, Escape cancels",
+                id="confirm-input",
+            )
 
     def on_mount(self) -> None:
         self.query_one("#confirm-input", Input).focus()
@@ -246,6 +279,7 @@ class ConfirmDialog(ModalScreen):
 
 
 # ── Inline context-menu with backdrop ────────────────────────────────────────
+
 
 class _ContextBackdrop(Static):
     """Full-screen transparent layer behind the context menu.
@@ -277,10 +311,11 @@ class _ContextBackdrop(Static):
 
 class _MenuList(ListView):
     """ListView inside ContextMenuWidget — escape hides the parent menu."""
+
     def on_key(self, event) -> None:
         if event.key == "escape":
             parent = self.parent
-            if hasattr(parent, "hide"):
+            if isinstance(parent, ContextMenuWidget):
                 parent.hide()
             event.stop()
 
@@ -369,23 +404,17 @@ class ContextMenuWidget(Vertical):
 
 # ── Session preview + confirmation screen ────────────────────────────────────
 
-class SessionPreviewScreen(Screen):
-    """Full-screen preview before resuming. Enter=resume, Escape=back.
 
-    Features:
-    - Scrollable markdown preview
-    - ctrl+f live search with yellow highlight
-    - n/N navigate matches (vi-style, only when input not focused)
-    - ctrl+i toggle case-sensitive search
-    - Regex search supported (e.g. foo.*bar)
-    """
-
+class SessionPreviewScreen(Screen[None]):
     BINDINGS = [
-        Binding("enter",  "confirm",    "Resume", show=True),
-        Binding("escape", "cancel",     "Back",   show=True),
-        Binding("ctrl+f", "focus_find", "Find",   show=True),
-        Binding("ctrl+i", "toggle_case","Aa",     show=True),
-        Binding("ctrl+c", "quit_app",   "Quit",   show=False),
+        Binding("enter", "confirm", "Resume", show=True),
+        Binding("escape", "cancel", "Back", show=True),
+        Binding("ctrl+f", "focus_find", "Find text", show=True),
+        Binding("ctrl+i", "cycle_case_mode", "Case mode", show=False),
+        Binding("ctrl+g", "toggle_regex", "Regex", show=False),
+        Binding("alt+c", "cycle_case_mode", "Case mode", show=True),
+        Binding("alt+r", "toggle_regex", "Regex", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -406,14 +435,16 @@ class SessionPreviewScreen(Screen):
     #find-input {
         width: 1fr;
         height: 3;
-        border: none;
-        background: $boost;
-        color: $foreground;
+        border: tall $primary 40%;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
         padding: 0 1;
     }
     #find-input:focus {
-        border: none;
-        background: $panel-darken-1;
+        border: tall $primary;
+        background: $boost;
+        color: $text;
     }
     #match-info {
         width: 20;
@@ -439,7 +470,20 @@ class SessionPreviewScreen(Screen):
         self._matches: list[int] = []
         self._match_idx: int = 0
         self._search_term: str = search_term
-        self._case_sensitive: bool = False
+        self._case_modes = ["smart", "ignore", "match"]
+        self._case_mode_idx: int = 0
+        self._regex_mode: bool = True
+
+    @property
+    def _case_mode(self) -> str:
+        return self._case_modes[self._case_mode_idx]
+
+    def _flags_for(self, term: str) -> int:
+        if self._case_mode == "match":
+            return 0
+        if self._case_mode == "ignore":
+            return re.IGNORECASE
+        return 0 if any(ch.isupper() for ch in term) else re.IGNORECASE
 
     def compose(self) -> ComposeResult:
         s = self._session
@@ -452,7 +496,7 @@ class SessionPreviewScreen(Screen):
         with Horizontal(id="find-bar"):
             yield Input(
                 value=self._initial_search,
-                placeholder="ctrl+f to search (regex ok)…",
+                placeholder="Find in preview (regex). Ctrl+I toggles case; n/N jumps.",
                 id="find-input",
             )
             yield Label("", id="match-info")
@@ -472,9 +516,9 @@ class SessionPreviewScreen(Screen):
         except Exception as e:
             text = f"*Error: {e}*"
         self._raw_text = text
-        self.app.call_from_thread(self._render)
+        self.app.call_from_thread(self._render_preview)
 
-    def _render(self) -> None:
+    def _render_preview(self) -> None:
         term = self._search_term
         preview = self.query_one("#preview", Static)
         mi = self.query_one("#match-info", Label)
@@ -482,14 +526,22 @@ class SessionPreviewScreen(Screen):
         if not term:
             self._matches = []
             preview.update(RichMarkdown(self._raw_text))
-            mi.update("")
+            case_indicator = f"[dim]case:{self._case_mode}[/dim]"
+            regex_indicator = (
+                "[dim]regex[/dim]" if self._regex_mode else "[dim]literal[/dim]"
+            )
+            mi.update(
+                f"[dim]Ctrl+F find • Ctrl+I/Alt+C case • Ctrl+G/Alt+R regex • n/N next[/dim]  {case_indicator} {regex_indicator}"
+            )
             return
 
-        flags = 0 if self._case_sensitive else re.IGNORECASE
-        try:
-            pattern = re.compile(re.escape(term), flags)
-        except re.error:
-            # Fallback: treat as literal
+        flags = self._flags_for(term)
+        if self._regex_mode:
+            try:
+                pattern = re.compile(term, flags)
+            except re.error:
+                pattern = re.compile(re.escape(term), flags)
+        else:
             pattern = re.compile(re.escape(term), flags)
 
         lines = self._raw_text.split("\n")
@@ -501,7 +553,7 @@ class SessionPreviewScreen(Screen):
                 match_lines.append(i)
                 pos = 0
                 for m in pattern.finditer(line):
-                    rt.append(line[pos:m.start()])
+                    rt.append(line[pos : m.start()])
                     rt.append(m.group(), style="bold black on yellow")
                     pos = m.end()
                 rt.append(line[pos:])
@@ -515,14 +567,22 @@ class SessionPreviewScreen(Screen):
 
         if match_lines:
             self._match_idx = min(self._match_idx, len(match_lines) - 1)
-            case_indicator = "[dim]Aa[/dim] " if self._case_sensitive else ""
-            mi.update(f"{case_indicator}[dim]{self._match_idx + 1}/{len(match_lines)}[/dim]")
-            self._scroll_to(match_lines[self._match_idx])
+            case_indicator = f"[dim]{self._case_mode}[/dim] "
+            regex_indicator = (
+                "[dim]re[/dim] " if self._regex_mode else "[dim]lit[/dim] "
+            )
+            mi.update(
+                f"{case_indicator}{regex_indicator}[dim]{self._match_idx + 1}/{len(match_lines)}[/dim]"
+            )
+            self._scroll_to_line(match_lines[self._match_idx])
         else:
-            case_indicator = "[dim]Aa[/dim] " if self._case_sensitive else ""
-            mi.update(f"{case_indicator}[dim]no match[/dim]")
+            case_indicator = f"[dim]{self._case_mode}[/dim] "
+            regex_indicator = (
+                "[dim]re[/dim] " if self._regex_mode else "[dim]lit[/dim] "
+            )
+            mi.update(f"{case_indicator}{regex_indicator}[dim]no match[/dim]")
 
-    def _scroll_to(self, line_idx: int) -> None:
+    def _scroll_to_line(self, line_idx: int) -> None:
         self.query_one("#preview-scroll", VerticalScroll).scroll_to(
             y=line_idx, animate=True
         )
@@ -532,16 +592,19 @@ class SessionPreviewScreen(Screen):
             return
         self._match_idx = (self._match_idx + delta) % len(self._matches)
         mi = self.query_one("#match-info", Label)
-        case_indicator = "[dim]Aa[/dim] " if self._case_sensitive else ""
-        mi.update(f"{case_indicator}[dim]{self._match_idx + 1}/{len(self._matches)}[/dim]")
-        self._scroll_to(self._matches[self._match_idx])
+        case_indicator = f"[dim]{self._case_mode}[/dim] "
+        regex_indicator = "[dim]re[/dim] " if self._regex_mode else "[dim]lit[/dim] "
+        mi.update(
+            f"{case_indicator}{regex_indicator}[dim]{self._match_idx + 1}/{len(self._matches)}[/dim]"
+        )
+        self._scroll_to_line(self._matches[self._match_idx])
 
     @on(Input.Changed, "#find-input")
     def _find_changed(self, event: Input.Changed) -> None:
         self._search_term = event.value
         self._match_idx = 0
         if self._raw_text:
-            self._render()
+            self._render_preview()
 
     def on_key(self, event) -> None:
         # n/N navigate only when find input does NOT have focus
@@ -556,12 +619,18 @@ class SessionPreviewScreen(Screen):
     def action_focus_find(self) -> None:
         self.query_one("#find-input", Input).focus()
 
-    def action_toggle_case(self) -> None:
-        self._case_sensitive = not self._case_sensitive
-        mode = "case-sensitive" if self._case_sensitive else "case-insensitive"
-        self.notify(f"Search: {mode}", timeout=1)
+    def action_cycle_case_mode(self) -> None:
+        self._case_mode_idx = (self._case_mode_idx + 1) % len(self._case_modes)
+        self.notify(f"Find case mode: {self._case_mode}", timeout=1.4)
         if self._raw_text:
-            self._render()
+            self._render_preview()
+
+    def action_toggle_regex(self) -> None:
+        self._regex_mode = not self._regex_mode
+        mode = "regex" if self._regex_mode else "literal"
+        self.notify(f"Find mode: {mode}", timeout=1.4)
+        if self._raw_text:
+            self._render_preview()
 
     def action_confirm(self) -> None:
         self.app.exit(("resume", self._session.sid))
@@ -575,12 +644,13 @@ class SessionPreviewScreen(Screen):
 
 # ── Directory picker screen ───────────────────────────────────────────────────
 
-class DirectoryPickerScreen(Screen):
+
+class DirectoryPickerScreen(Screen[None]):
     """Pick a project directory to filter sessions by — yazi/lazyvim style."""
 
     BINDINGS = [
-        Binding("escape", "show_all",  "All projects", show=True),
-        Binding("ctrl+c", "quit_app",  "Quit",         show=False),
+        Binding("escape", "show_all", "All projects", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
     ]
 
     DEFAULT_CSS = """
@@ -633,16 +703,21 @@ class DirectoryPickerScreen(Screen):
         lv = self.query_one("#dir-list", ListView)
         lv.clear()
         for display, _, count in self._dirs:
-            lv.append(ListItem(Label(
-                f"{escape(display)}  [dim]{count} session{'s' if count != 1 else ''}[/dim]"
-            )))
+            lv.append(
+                ListItem(
+                    Label(
+                        f"{escape(display)}  [dim]{count} session{'s' if count != 1 else ''}[/dim]"
+                    )
+                )
+            )
 
     @on(Input.Changed, "#dir-filter")
     def _filter(self, event: Input.Changed) -> None:
         q = event.value.lower()
         self._dirs = (
             [(d, p, c) for d, p, c in self._all_dirs if q in d.lower()]
-            if q else self._all_dirs[:]
+            if q
+            else self._all_dirs[:]
         )
         self._render_list()
 
@@ -711,33 +786,36 @@ _SPLIT_CSS = """
 
 _SORT_CYCLE = ["recent", "oldest", "msgs_desc", "msgs_asc"]
 _SORT_LABEL = {
-    "recent":    "↓ Recent",
-    "oldest":    "↑ Oldest",
+    "recent": "↓ Recent",
+    "oldest": "↑ Oldest",
     "msgs_desc": "↓ Msgs",
-    "msgs_asc":  "↑ Msgs",
+    "msgs_asc": "↑ Msgs",
 }
 
 
 # ── Browse screen ─────────────────────────────────────────────────────────────
 
-class BrowseScreen(Screen):
+
+class BrowseScreen(Screen[None]):
     """Main session list — vim-style / filter, ctrl+a directory picker."""
 
     BINDINGS = [
-        Binding("ctrl+d",          "trash_session",  "Trash",      show=True),
-        Binding("ctrl+r",          "rename_session", "Rename",     show=True),
-        Binding("ctrl+t",          "open_trash",     "Trash bin",  show=True),
-        Binding("ctrl+a",          "toggle_all",     "Dir filter", show=True),
-        Binding("ctrl+s",          "cycle_sort",     "Sort",       show=True),
-        Binding("ctrl+underscore", "content_search", "Search",     show=True),
-        Binding("ctrl+slash",      "content_search", "Search",     show=False),
-        Binding("ctrl+n",          "new_session",    "New",        show=True),
-        Binding("ctrl+c",          "quit_app",       "Quit",       show=False),
-        Binding("escape",          "quit_app",       "Quit",       show=False),
-        Binding("/",               "start_filter",   "Filter",     show=True),
+        Binding("ctrl+d", "trash_session", "Trash", show=True),
+        Binding("ctrl+r", "rename_session", "Rename", show=True),
+        Binding("ctrl+t", "open_trash", "Trash bin", show=True),
+        Binding("ctrl+a", "toggle_all", "Dir filter", show=True),
+        Binding("ctrl+s", "cycle_sort", "Sort", show=True),
+        Binding("ctrl+underscore", "content_search", "Search", show=True),
+        Binding("ctrl+slash", "content_search", "Search", show=False),
+        Binding("ctrl+n", "new_session", "New", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
+        Binding("escape", "quit_app", "Quit", show=False),
+        Binding("/", "start_filter", "Filter", show=True),
     ]
 
-    DEFAULT_CSS = _SPLIT_CSS + """
+    DEFAULT_CSS = (
+        _SPLIT_CSS
+        + """
     BrowseScreen {
         layers: base backdrop overlay;
     }
@@ -761,6 +839,7 @@ class BrowseScreen(Screen):
         background: $panel;
     }
     """
+    )
 
     def __init__(self, all_projects: bool = True, cwd: Optional[str] = None) -> None:
         super().__init__()
@@ -807,8 +886,11 @@ class BrowseScreen(Screen):
         q = query.lower().split()
         if q:
             self._filtered = [
-                s for s in self._sessions
-                if all(w in f"{s.name} {s.first_msg} {s.project_path}".lower() for w in q)
+                s
+                for s in self._sessions
+                if all(
+                    w in f"{s.name} {s.first_msg} {s.project_path}".lower() for w in q
+                )
             ]
         else:
             self._filtered = list(self._sessions)
@@ -854,7 +936,7 @@ class BrowseScreen(Screen):
         fi = self.query_one("#filter", FilterInput)
         fi.focus()
 
-    @on(FilterInput.Cancelled, "#filter")
+    @on(FilterInput.Cancelled)
     def _filter_cancelled(self) -> None:
         self._hide_filter()
 
@@ -955,6 +1037,7 @@ class BrowseScreen(Screen):
                         cwd=self._cwd,
                     )
                 )
+
         self.app.push_screen(InputDialog("Search session content (ripgrep):"), on_query)
 
     def action_new_session(self) -> None:
@@ -969,9 +1052,14 @@ class BrowseScreen(Screen):
     def _session_right_clicked(self, event: SessionItem.RightClicked) -> None:
         self._ctx_session = event.session
         self.query_one(ContextMenuWidget).show(
-            [("Resume", "resume"), ("Rename", "rename"),
-             ("Trash", "trash"),   ("New session", "new")],
-            event.x, event.y,
+            [
+                ("Resume", "resume"),
+                ("Rename", "rename"),
+                ("Trash", "trash"),
+                ("New session", "new"),
+            ],
+            event.x,
+            event.y,
         )
 
     @on(ContextMenuWidget.Chosen)
@@ -982,6 +1070,7 @@ class BrowseScreen(Screen):
         if event.value == "resume":
             self.app.push_screen(SessionPreviewScreen(s))
         elif event.value == "rename":
+
             def on_rename(new_name: Optional[str]) -> None:
                 if new_name:
                     pid = project_for_session(s.sid)
@@ -989,6 +1078,7 @@ class BrowseScreen(Screen):
                         set_name(pid, s.sid, new_name)
                         self._load()
                         self.notify(f"Renamed: {new_name}", timeout=2)
+
             self.app.push_screen(InputDialog("New name:", initial=s.name), on_rename)
         elif event.value == "trash":
             lv = self.query_one("#sessions", ListView)
@@ -1009,29 +1099,42 @@ class BrowseScreen(Screen):
 
 # ── Content search screen ─────────────────────────────────────────────────────
 
-class ContentSearchScreen(Screen):
+
+class ContentSearchScreen(Screen[None]):
     BINDINGS = [
-        Binding("ctrl+d",          "trash_session", "Trash",  show=True),
-        Binding("ctrl+underscore", "new_search",    "Search", show=True),
-        Binding("ctrl+slash",      "new_search",    "Search", show=False),
-        Binding("ctrl+b",          "back",          "Back",   show=True),
-        Binding("ctrl+c",          "quit_app",      "Quit",   show=False),
-        Binding("escape",          "back",          "Back",   show=False),
+        Binding("ctrl+d", "trash_session", "Trash", show=True),
+        Binding("ctrl+underscore", "new_search", "Search", show=True),
+        Binding("ctrl+slash", "new_search", "Search", show=False),
+        Binding("ctrl+g", "toggle_regex", "Regex", show=False),
+        Binding("ctrl+i", "toggle_case_mode", "Case mode", show=False),
+        Binding("alt+r", "toggle_regex", "Regex", show=True),
+        Binding("alt+c", "toggle_case_mode", "Case mode", show=True),
+        Binding("ctrl+b", "back", "Back", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
+        Binding("escape", "back", "Back", show=False),
     ]
 
-    DEFAULT_CSS = _SPLIT_CSS + """
+    DEFAULT_CSS = (
+        _SPLIT_CSS
+        + """
     ContentSearchScreen {
         layers: base backdrop overlay;
     }
     ContentSearchScreen #search {
         height: 3;
-        border: none;
-        border-bottom: solid $panel-darken-1;
-        background: $boost;
-        color: $foreground;
+        border: tall $primary 40%;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
         padding: 0 1;
     }
+    ContentSearchScreen #search:focus {
+        border: tall $primary;
+        background: $boost;
+        color: $text;
+    }
     """
+    )
 
     def __init__(
         self,
@@ -1046,6 +1149,17 @@ class ContentSearchScreen(Screen):
         self._sessions: list[Session] = []
         self._preview_timer: Optional[Timer] = None
         self._ctx_session: Optional[Session] = None
+        self._regex_mode: bool = True
+        self._case_modes = ["smart", "ignore", "match"]
+        self._case_mode_idx: int = 0
+
+    @property
+    def _case_mode(self) -> str:
+        return self._case_modes[self._case_mode_idx]
+
+    def _search_mode_label(self) -> str:
+        regex = "regex" if self._regex_mode else "literal"
+        return f"{regex} • case:{self._case_mode}"
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -1053,7 +1167,7 @@ class ContentSearchScreen(Screen):
             with Vertical(id="left"):
                 yield FilterInput(
                     value=self._query,
-                    placeholder="rg query — Enter to search",
+                    placeholder="rg query — Enter search • Ctrl+G/Alt+R regex • Ctrl+I/Alt+C case",
                     id="search",
                 )
                 yield ListView(id="sessions")
@@ -1070,7 +1184,14 @@ class ContentSearchScreen(Screen):
         self.query_one("#search", FilterInput).focus()
 
     def _run_search(self, query: str) -> None:
-        self._sessions = search_sessions(query, cwd=self._cwd, all_projects=self._all_projects)
+        self._query = query
+        self._sessions = search_sessions(
+            query,
+            cwd=self._cwd,
+            all_projects=self._all_projects,
+            use_regex=self._regex_mode,
+            case_mode=self._case_mode,
+        )
         lv = self.query_one("#sessions", ListView)
         lv.clear()
         for s in self._sessions:
@@ -1079,7 +1200,7 @@ class ContentSearchScreen(Screen):
             self._load_preview(self._sessions[0].sid)
         else:
             self.query_one("#preview", Static).update(f"*No results for: {query}*")
-        self.app.sub_title = f"search: {query}"
+        self.app.sub_title = f"search: {query}  ({self._search_mode_label()})"
 
     def _current_session(self) -> Optional[Session]:
         item = self.query_one("#sessions", ListView).highlighted_child
@@ -1101,7 +1222,7 @@ class ContentSearchScreen(Screen):
         if s:
             self.app.push_screen(SessionPreviewScreen(s, search_term=self._query))
 
-    @on(FilterInput.Cancelled, "#search")
+    @on(FilterInput.Cancelled)
     def _search_cancelled(self) -> None:
         self.action_back()
 
@@ -1158,6 +1279,21 @@ class ContentSearchScreen(Screen):
     def action_new_search(self) -> None:
         self.query_one("#search", FilterInput).focus()
 
+    def action_toggle_regex(self) -> None:
+        self._regex_mode = not self._regex_mode
+        mode = "regex" if self._regex_mode else "literal"
+        self.notify(f"Search mode: {mode}", timeout=1.4)
+        q = self.query_one("#search", FilterInput).value.strip()
+        if q:
+            self._run_search(q)
+
+    def action_toggle_case_mode(self) -> None:
+        self._case_mode_idx = (self._case_mode_idx + 1) % len(self._case_modes)
+        self.notify(f"Search case mode: {self._case_mode}", timeout=1.4)
+        q = self.query_one("#search", FilterInput).value.strip()
+        if q:
+            self._run_search(q)
+
     def action_back(self) -> None:
         self.app.pop_screen()
 
@@ -1169,7 +1305,8 @@ class ContentSearchScreen(Screen):
         self._ctx_session = event.session
         self.query_one(ContextMenuWidget).show(
             [("Resume", "resume"), ("Trash", "trash")],
-            event.x, event.y,
+            event.x,
+            event.y,
         )
 
     @on(ContextMenuWidget.Chosen)
@@ -1196,20 +1333,24 @@ class ContentSearchScreen(Screen):
 
 # ── Trash screen ──────────────────────────────────────────────────────────────
 
-class TrashScreen(Screen):
+
+class TrashScreen(Screen[None]):
     BINDINGS = [
         Binding("ctrl+d", "delete_forever", "Delete forever", show=True),
-        Binding("ctrl+e", "empty_all",      "Empty trash",    show=True),
-        Binding("ctrl+b", "back",           "Back",           show=True),
-        Binding("ctrl+c", "quit_app",       "Quit",           show=False),
-        Binding("escape", "back",           "Back",           show=False),
+        Binding("ctrl+e", "empty_all", "Empty trash", show=True),
+        Binding("ctrl+b", "back", "Back", show=True),
+        Binding("ctrl+c", "quit_app", "Quit", show=False),
+        Binding("escape", "back", "Back", show=False),
     ]
 
-    DEFAULT_CSS = _SPLIT_CSS + """
+    DEFAULT_CSS = (
+        _SPLIT_CSS
+        + """
     TrashScreen {
         layers: base backdrop overlay;
     }
     """
+    )
 
     def __init__(self, cwd: Optional[str] = None) -> None:
         super().__init__()
@@ -1287,13 +1428,15 @@ class TrashScreen(Screen):
         self.notify(f"Restored: {entry.name or entry.sid[:16]}", timeout=2)
 
     def _do_delete(self, e: TrashEntry) -> None:
-        def on_confirm(yes: bool) -> None:
+        def on_confirm(yes: bool | None) -> None:
             if yes:
                 from .backend import TRASH_DIR
+
                 (TRASH_DIR / f"{e.sid}.jsonl").unlink(missing_ok=True)
                 (TRASH_DIR / f"{e.sid}.meta").unlink(missing_ok=True)
                 self._load()
                 self.notify("Deleted.", timeout=1)
+
         self.app.push_screen(
             ConfirmDialog(f"Permanently delete '{e.name or e.sid[:20]}'?"),
             on_confirm,
@@ -1309,14 +1452,16 @@ class TrashScreen(Screen):
             self.notify("Trash is already empty.", timeout=2)
             return
 
-        def on_confirm(yes: bool) -> None:
+        def on_confirm(yes: bool | None) -> None:
             if yes:
                 n = empty_trash()
                 self._load()
                 self.notify(f"Emptied {n} session(s).", timeout=2)
 
         self.app.push_screen(
-            ConfirmDialog(f"Permanently delete all {len(self._entries)} trashed session(s)?"),
+            ConfirmDialog(
+                f"Permanently delete all {len(self._entries)} trashed session(s)?"
+            ),
             on_confirm,
         )
 
@@ -1330,8 +1475,13 @@ class TrashScreen(Screen):
     def _trash_right_clicked(self, event: TrashItem.RightClicked) -> None:
         self._ctx_entry = event.entry
         self.query_one(ContextMenuWidget).show(
-            [("Restore", "restore"), ("Delete forever", "delete"), ("Empty trash", "empty")],
-            event.x, event.y,
+            [
+                ("Restore", "restore"),
+                ("Delete forever", "delete"),
+                ("Empty trash", "empty"),
+            ],
+            event.x,
+            event.y,
         )
 
     @on(ContextMenuWidget.Chosen)
@@ -1349,7 +1499,8 @@ class TrashScreen(Screen):
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
-class ClaudetreeApp(App):
+
+class ClaudetreeApp(App[tuple[str, str] | tuple[str] | None]):
     TITLE = "claudetree"
     CSS = """
     /* NOTE: do NOT set 'layers' on Screen globally — it breaks Screen.render()
@@ -1368,13 +1519,19 @@ class ClaudetreeApp(App):
        Uses Textual 8.x variables: $boost (elevated surface), $foreground (text),
        $border / $border-blurred (border colors). */
     Input {
-        background: $boost;
-        color: $foreground;
-        border: tall $border-blurred;
+        background: $panel-darken-2;
+        color: $text;
+        border: tall $primary 40%;
         padding: 0 1;
     }
     Input:focus {
-        border: tall $border;
+        background: $boost;
+        color: $text;
+        border: tall $primary;
+    }
+    Input > .input--value {
+        color: $text;
+        text-style: bold;
     }
     Input > .input--cursor {
         background: $input-cursor-background;
@@ -1387,7 +1544,71 @@ class ClaudetreeApp(App):
     Input > .input--suggestion {
         color: $text-disabled;
     }
+    Input:ansi {
+        background: ansi_default;
+        color: ansi_white;
+        border: tall ansi_bright_black;
+    }
+    Input:ansi:focus {
+        background: ansi_default;
+        color: ansi_white;
+        border: tall ansi_white;
+    }
+    Input:ansi > .input--cursor {
+        background: ansi_white;
+        color: ansi_black;
+    }
+    Input:ansi > .input--selection {
+        background: ansi_bright_black;
+    }
+    Input:ansi > .input--placeholder,
+    Input:ansi > .input--suggestion {
+        color: ansi_bright_black;
+    }
 
+    #filter-bar FilterInput {
+        border: tall $primary 40%;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+    }
+    #filter-bar FilterInput:focus {
+        border: tall $primary;
+        background: $boost;
+        color: $text;
+    }
+    #filter-bar FilterInput:ansi {
+        border: tall ansi_bright_black;
+        background: ansi_default;
+        color: ansi_white;
+    }
+    #filter-bar FilterInput:ansi:focus {
+        border: tall ansi_white;
+        background: ansi_default;
+        color: ansi_white;
+    }
+    #dir-filter {
+        border: tall $primary 40%;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+    }
+    #dir-filter:focus {
+        border: tall $primary;
+        background: $boost;
+        color: $text;
+    }
+    #dir-filter:ansi {
+        border: tall ansi_bright_black;
+        background: ansi_default;
+        color: ansi_white;
+    }
+    #dir-filter:ansi:focus {
+        border: tall ansi_white;
+        background: ansi_default;
+        color: ansi_white;
+    }
+    
     ListView > ListItem {
         padding: 0 1;
     }
@@ -1411,4 +1632,6 @@ class ClaudetreeApp(App):
         if self._initial_screen == "trash":
             self.push_screen(TrashScreen(cwd=self._cwd))
         else:
-            self.push_screen(BrowseScreen(all_projects=self._all_projects, cwd=self._cwd))
+            self.push_screen(
+                BrowseScreen(all_projects=self._all_projects, cwd=self._cwd)
+            )

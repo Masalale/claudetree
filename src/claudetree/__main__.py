@@ -1,4 +1,5 @@
 """CLI entry point for claudetree."""
+
 from __future__ import annotations
 
 import os
@@ -22,6 +23,7 @@ def main() -> None:
     elif cmd in ("rm", "delete", "trash"):
         if len(args) >= 2:
             from .backend import trash_session
+
             try:
                 trash_session(args[1])
                 print("Trashed.")
@@ -34,6 +36,7 @@ def main() -> None:
     elif cmd == "restore":
         if len(args) >= 2:
             from .backend import restore_session
+
             try:
                 restore_session(args[1])
                 print("Restored.")
@@ -45,6 +48,7 @@ def main() -> None:
 
     elif cmd == "empty":
         from .backend import list_trash, empty_trash
+
         entries = list_trash()
         if not entries:
             print("Trash is empty.")
@@ -70,6 +74,7 @@ def main() -> None:
 
 def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
     from .app import ClaudetreeApp
+
     app = ClaudetreeApp(
         initial_screen=initial_screen,
         all_projects=all_projects,
@@ -80,6 +85,9 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
         return
     action = result[0]
     if action == "resume":
+        if len(result) < 2:
+            print("Error: missing session id for resume action", file=sys.stderr)
+            sys.exit(1)
         sid = result[1]
         claude = os.environ.get("CLAUDE_CMD", "claude")
         os.execvp(claude, [claude, "--resume", sid])
@@ -92,10 +100,17 @@ def _run_internal(args: list[str]) -> None:
     """Internal commands for shell scripts and backward compat."""
     import json
     from .backend import (
-        list_sessions, list_trash, search_sessions, preview_session,
-        trash_session, restore_session, empty_trash, set_name,
+        list_sessions,
+        list_trash,
+        search_sessions,
+        preview_session,
+        trash_session,
+        restore_session,
+        empty_trash,
+        set_name,
         project_for_session,
     )
+
     cmd = args[0]
     cwd = os.getcwd()
 
@@ -157,6 +172,20 @@ Keybindings (in picker):
   ctrl-a     Toggle all projects  ctrl-n  New session
   ctrl-/     Search session content (ripgrep)
   ctrl-b     Back (in search/trash views)
+
+Preview find mode:
+  ctrl-f     Focus find box (supports regex)
+  ctrl-i     Cycle case mode (smart/ignore/match)
+  ctrl-g     Toggle regex/literal mode
+  alt-c      Cycle case mode (fallback)
+  alt-r      Toggle regex/literal mode (fallback)
+  n / N      Next / previous match
+
+Search mode (ctrl-/):
+  ctrl-i     Cycle case mode (smart/ignore/match)
+  ctrl-g     Toggle regex/literal mode
+  alt-c      Cycle case mode (fallback)
+  alt-r      Toggle regex/literal mode (fallback)
 """)
 
 

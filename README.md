@@ -198,7 +198,22 @@ cc help        # show help
 | `enter` (in input) | Run search |
 | `ctrl-d` | Trash session |
 | `ctrl-/` | Re-focus search |
+| `ctrl-i` | Cycle case mode (smart/ignore/match) |
+| `ctrl-g` | Toggle regex/literal mode |
+| `alt-c` | Cycle case mode (smart/ignore/match) |
+| `alt-r` | Toggle regex/literal mode |
 | `ctrl-b` | Back to browse |
+
+### Preview mode (after opening a session)
+
+| Key | Action |
+|-----|--------|
+| `ctrl-f` | Focus find input |
+| `ctrl-i` | Cycle case mode (smart/ignore/match) |
+| `ctrl-g` | Toggle regex/literal mode |
+| `alt-c` | Cycle case mode (smart/ignore/match) |
+| `alt-r` | Toggle regex/literal mode |
+| `n / N` | Next / previous match |
 
 ### Trash bin
 

@@ -1,4 +1,5 @@
 """Session management backend — reads Claude Code .jsonl files directly."""
+
 from __future__ import annotations
 
 import json
@@ -62,6 +63,7 @@ class TrashEntry:
 
 # ── Age helpers ─────────────────────────────────────────────────────────────
 
+
 def _compute_age(last_time) -> str:
     try:
         if isinstance(last_time, (int, float)):
@@ -80,7 +82,8 @@ def _compute_age(last_time) -> str:
 
 # ── Name management ──────────────────────────────────────────────────────────
 
-def get_names(project_id: str) -> dict:
+
+def get_names(project_id: str) -> dict[str, str]:
     nf = NAMES_DIR / f"{project_id}.json"
     if nf.exists():
         try:
@@ -114,6 +117,7 @@ def project_for_session(sid: str) -> Optional[str]:
 
 # ── JSONL parsing ────────────────────────────────────────────────────────────
 
+
 def _parse_jsonl(filepath: str):
     """Return (last_time, msg_count, first_user_msg)."""
     last_time, cnt, first = "", 0, ""
@@ -136,8 +140,12 @@ def _parse_jsonl(filepath: str):
                                 t = c
                             else:
                                 t = next(
-                                    (x.get("text", "") for x in c
-                                     if isinstance(x, dict) and x.get("type") == "text"),
+                                    (
+                                        x.get("text", "")
+                                        for x in c
+                                        if isinstance(x, dict)
+                                        and x.get("type") == "text"
+                                    ),
                                     "",
                                 )
                             first = t.strip().replace("\n", " ")[:60]
@@ -150,7 +158,10 @@ def _parse_jsonl(filepath: str):
 
 # ── Session listing ──────────────────────────────────────────────────────────
 
-def list_sessions(cwd: Optional[str] = None, all_projects: bool = False) -> list[Session]:
+
+def list_sessions(
+    cwd: Optional[str] = None, all_projects: bool = False
+) -> list[Session]:
     NAMES_DIR.mkdir(parents=True, exist_ok=True)
     TRASH_DIR.mkdir(parents=True, exist_ok=True)
     if cwd is None:
@@ -170,15 +181,17 @@ def list_sessions(cwd: Optional[str] = None, all_projects: bool = False) -> list
             if not cnt:
                 continue
             age = _compute_age(last_time) if last_time else "?"
-            rows.append(Session(
-                sid=sid,
-                name=names.get(sid, ""),
-                first_msg=first,
-                age=age,
-                msgs=cnt,
-                project_id=pid,
-                sort_time=str(last_time),
-            ))
+            rows.append(
+                Session(
+                    sid=sid,
+                    name=names.get(sid, ""),
+                    first_msg=first,
+                    age=age,
+                    msgs=cnt,
+                    project_id=pid,
+                    sort_time=str(last_time),
+                )
+            )
     rows.sort(key=lambda r: r.sort_time, reverse=True)
     return rows
 
@@ -198,7 +211,9 @@ def list_trash() -> list[TrashEntry]:
                 name = m.get("name", "")
                 ts = m.get("trashed_at", 0)
                 if ts:
-                    d = datetime.now(timezone.utc) - datetime.fromtimestamp(ts, tz=timezone.utc)
+                    d = datetime.now(timezone.utc) - datetime.fromtimestamp(
+                        ts, tz=timezone.utc
+                    )
                     when = f"{d.days}d ago" if d.days else f"{d.seconds // 3600}h ago"
             except Exception:
                 pass
@@ -211,6 +226,8 @@ def search_sessions(
     query: str,
     cwd: Optional[str] = None,
     all_projects: bool = False,
+    use_regex: bool = True,
+    case_mode: str = "smart",
 ) -> list[Session]:
     if not query:
         return []
@@ -223,10 +240,24 @@ def search_sessions(
         search_path = str(PROJECTS_DIR / cur)
         if not os.path.exists(search_path):
             return []
-    result = subprocess.run(
-        ["rg", "--files-with-matches", "--ignore-case", query, search_path],
-        capture_output=True, text=True,
-    )
+    try:
+        cmd = ["rg", "--files-with-matches"]
+        if case_mode == "ignore":
+            cmd.append("--ignore-case")
+        elif case_mode == "match":
+            cmd.append("--case-sensitive")
+        else:
+            cmd.append("--smart-case")
+        if not use_regex:
+            cmd.append("--fixed-strings")
+        cmd.extend([query, search_path])
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return []
     files = {f for f in result.stdout.strip().splitlines() if f.endswith(".jsonl")}
     if not files:
         return []
@@ -240,15 +271,17 @@ def search_sessions(
         if not cnt:
             continue
         age = _compute_age(last_time) if last_time else "?"
-        rows.append(Session(
-            sid=sid,
-            name=names.get(sid, ""),
-            first_msg=first,
-            age=age,
-            msgs=cnt,
-            project_id=pid,
-            sort_time=str(last_time),
-        ))
+        rows.append(
+            Session(
+                sid=sid,
+                name=names.get(sid, ""),
+                first_msg=first,
+                age=age,
+                msgs=cnt,
+                project_id=pid,
+                sort_time=str(last_time),
+            )
+        )
     rows.sort(key=lambda r: r.sort_time, reverse=True)
     return rows
 
@@ -304,8 +337,11 @@ def preview_session(sid: str) -> str:
                     t = c
                 else:
                     t = next(
-                        (x.get("text", "") for x in c
-                         if isinstance(x, dict) and x.get("type") == "text"),
+                        (
+                            x.get("text", "")
+                            for x in c
+                            if isinstance(x, dict) and x.get("type") == "text"
+                        ),
                         "",
                     )
                 t = t.strip()
@@ -321,8 +357,7 @@ def preview_session(sid: str) -> str:
                     if len(t) > _MSG_CAP:
                         msg += f"\n\n*… ({len(t) - _MSG_CAP} more chars)*"
                     quoted = "\n".join(
-                        f"> {ln}" if ln.strip() else ">"
-                        for ln in msg.split("\n")
+                        f"> {ln}" if ln.strip() else ">" for ln in msg.split("\n")
                     )
                     parts.append(quoted)
                 else:
@@ -349,6 +384,7 @@ def preview_session(sid: str) -> str:
 
 # ── Trash operations ─────────────────────────────────────────────────────────
 
+
 def trash_session(sid: str) -> None:
     pid = project_for_session(sid)
     if not pid:
@@ -359,12 +395,17 @@ def trash_session(sid: str) -> None:
     names = get_names(pid)
     name = names.get(sid, "")
     TRASH_DIR.mkdir(parents=True, exist_ok=True)
-    meta = {"project_id": pid, "name": name, "trashed_at": int(datetime.now().timestamp())}
+    meta = {
+        "project_id": pid,
+        "name": name,
+        "trashed_at": int(datetime.now().timestamp()),
+    }
     (TRASH_DIR / f"{sid}.meta").write_text(json.dumps(meta))
     f.rename(TRASH_DIR / f"{sid}.jsonl")
     sidecar = PROJECTS_DIR / pid / sid
     if sidecar.is_dir():
         import shutil
+
         shutil.move(str(sidecar), str(TRASH_DIR / sid))
     rm_name(pid, sid)
 
@@ -390,6 +431,7 @@ def restore_session(sid: str) -> None:
     sidecar = TRASH_DIR / sid
     if sidecar.is_dir():
         import shutil
+
         shutil.move(str(sidecar), str(dest_dir / sid))
     meta_file.unlink(missing_ok=True)
     if name:

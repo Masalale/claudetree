@@ -64,19 +64,30 @@ claudetree is the tool I wished I had — a simple way to make session history u
 
 ## How it works
 
-claudetree reads your local Claude session files from `~/.claude/`.
+claudetree reads your Claude sessions directly from disk — no API, no cloud, no account.
 
-- No API calls
-- No cloud syncing
-- No account needed
-
-You pick a session, claudetree exits, and runs:
-
-```bash
-claude --resume <session-id>
+```
+~/.claude/
+├── projects/           ← where Claude stores your sessions (.jsonl files)
+├── session-names/      ← custom names you assign (persisted)
+└── trash/               ← soft-deleted sessions (restore anytime)
 ```
 
-Claude takes over from there.
+**What it does:**
+
+- Scans all your projects and lists every session with age, message count, and first message
+- Lets you **search inside session content** using ripgrep (not just titles)
+- Stores custom names you give sessions in `~/.claude/session-names/{project}.json`
+- Moves trashed sessions to `~/.claude/trash/` with metadata so you can restore them
+- When you hit Enter on a session, it exits and runs `claude --resume <id>`
+
+**What it doesn't do:**
+
+- No network requests
+- No Claude API calls
+- No sending your data anywhere
+
+You stay in control. Claude Code takes over once you pick a session.
 
 ---
 

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# claudetree launcher — thin wrapper around the Python package
+# Install via: pip install --user ~/claudetree  (then use ~/.local/bin/cc directly)
+# Or run without installing: bash bin/cc
+exec python3 -m claudetree "$@"

@@ -240,7 +240,7 @@ cc help        # show help
 
 ## Future
 
-I'm exploring a bigger idea: **opentree** — one session manager for multiple AI coding harnesses (Claude Code, OpenCode, Gemini, Kilo Code, etc.).
+I'm exploring a bigger idea: one session manager for multiple AI coding harnesses (Claude Code, OpenCode, Gemini, Kilo Code, etc.).
 
 For now, this project focuses on **Claude Code**, and doing that well.
 

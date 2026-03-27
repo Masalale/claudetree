@@ -48,65 +48,29 @@ claudetree
 | [Claude CLI](https://claude.ai/code) | Resume/new-session handoff | Yes |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search | Optional |
 
-### 👤 For Humans (Interactive)
-
-The recommended way to install is using the interactive install script, which builds the binary and automatically configures your shell's `PATH`.
+Human first, then agent:
 
 ```bash
-git clone https://github.com/Masalale/claudetree ~/claudetree
-cd ~/claudetree
-./install.sh
+# Human
+git clone https://github.com/Masalale/claudetree ~/claudetree && cd ~/claudetree && ./install.sh
+
+# Agent (non-interactive)
+git clone https://github.com/Masalale/claudetree ~/claudetree && cd ~/claudetree && make install
 ```
-
-Alternatively, you can build and install manually using the Makefile:
-
-```bash
-make install
-```
-*(This builds `bin/cc` and copies it to `~/.local/bin/cc`. You will need to make sure `~/.local/bin` is on your `PATH`.)*
-
-### 🤖 For Agents (Non-Interactive)
-
-To install programmatically, agents should rely on the standard `make` target. This avoids shell detection scripts and cleanly outputs the binary:
-
-```bash
-git clone https://github.com/Masalale/claudetree ~/claudetree
-cd ~/claudetree
-make install
-```
-*(Agent note: Make sure to export `PATH="$HOME/.local/bin:$PATH"` in your environment or append it to the relevant shell profile if invoking `cc` directly.)*
 
 ## Uninstall
 
-### 👤 For Humans (Interactive)
-
-You can uninstall using the provided script. Session data under `~/.claude/` is always preserved.
+Human first, then agent:
 
 ```bash
-cd ~/claudetree
-./uninstall.sh
+# Human
+cd ~/claudetree && ./uninstall.sh
+
+# Agent (non-interactive)
+cd ~/claudetree && ./uninstall.sh --yes
 ```
 
-Alternatively, use the Makefile to remove just the binary:
-
-```bash
-make uninstall
-```
-
-### 🤖 For Agents (Non-Interactive)
-
-Agents should use the script with the `--yes` flag to automatically remove the binary and clean the `PATH` variables from shell configuration files programmatically:
-
-```bash
-cd ~/claudetree
-./uninstall.sh --yes
-```
-
-Alternatively, for a binary-only removal without touching shell configs:
-
-```bash
-make uninstall
-```
+`--yes` removes the binary and cleans `~/.local/bin` from shell config. Session data in `~/.claude/` is preserved.
 
 ## Usage
 

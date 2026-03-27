@@ -1,145 +1,94 @@
+<div align="center">
+
 # claudetree
 
-> ## ⚠️ ALPHA — expect bugs, breaking changes, and rough edges
-> This project is in early development.
+**A fast, single-binary terminal UI for managing your Claude Code sessions.**
 
-**Ever spent 20 minutes trying to find that one Claude session?**
+[![Go 1.22+](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![Alpha](https://img.shields.io/badge/status-alpha-orange?style=flat-square)]()
 
-I built claudetree because I was tired of losing context, opening the wrong chat, and repeating myself to Claude.
+[Getting Started](#getting-started) · [Usage](#usage) · [Keybindings](#keybindings) · [How it works](#how-it-works)
 
-claudetree gives you a clean terminal UI to find, search, rename, resume, and clean up your Claude Code sessions fast.
+</div>
 
-```
-  claudetree
- ┌──────────────────────────┬──────────────────────────────────┐
- │ filter sessions...       │                                  │
- │──────────────────────────│  ────────────────────────────    │
- │  4m  201msgs  openclaw   │  openclaw tui fix                │
- │ 13h   56msgs  WSL setup  │  ~/claudetree                    │
- │  1d   32msgs  auth refac │  ────────────────────────────    │
- │  3d    8msgs  docker dbg │  You:                            │
- │                          │    the tui wasn't rendering      │
- │                          │    ctrl-/ on the sessions list   │
- │                          │                                  │
- │                          │  Claude:                         │
- │                          │    The issue is in the key       │
- │                          │    binding — ctrl+underscore...  │
- └──────────────────────────┴──────────────────────────────────┘
- ^d Trash  ^r Rename  ^t Trash bin  ^a All  ^/ Search  ^n New
-```
+> [!WARNING]
+> This project is in early alpha. Expect bugs and breaking changes.
 
----
-
-## The Problem
-
-If you use Claude Code a lot, you know this pain:
-
-- You know you solved something before, but can't find the session
-- Your session list gets messy fast
-- You reopen old chats and waste time figuring out "where were we"
-- You end up repeating context instead of building
-
-That adds up. It's frustrating. And it breaks flow.
-
----
-
-## The Fix
-
-claudetree helps you stay in flow:
-
-- **Browse** sessions with preview, age, and message count
-- **Search** session content (not just titles)
-- **Resume** the exact session you need
-- **Rename** sessions so they actually make sense
-- **Trash/restore** old sessions to keep things clean
-
-No hype. Just useful session management.
-
----
-
-## Why this exists
-
-I work across a lot of projects. I kept losing good conversations. I'd remember we solved something, but not *where*. I'd waste time reopening the wrong sessions, re-explaining context, losing momentum.
-
-claudetree is the tool I wished I had — a simple way to make session history usable.
-
----
-
-## How it works
-
-claudetree reads your Claude sessions directly from disk — no API, no cloud, no account.
-
-**All your sessions, one place.**
-
-When you use Claude Code in any directory — `~/projects/app`, `~/work/api`, `/tmp/quick-test` — it stores sessions in `~/.claude/projects/`. claudetree scans ALL of them.
-
-**Works everywhere you use Claude Code:**
-
-- VS Code
-- VS Code Insiders
-- VSCodium
-- Antigravity
-- Cursor
-- Any VS Code fork
-- The CLI
-
-Same sessions, same storage (`~/.claude/projects/`). claudetree sees them all.
+Browse, search, rename, resume, and clean up Claude Code sessions across every project on your machine — without leaving the terminal.
 
 ```
-~/.claude/
-├── projects/           ← sessions from EVERY project you've used Claude Code in
-│   ├── -home-you-app/     (~/app)
-│   ├── -home-you-work-api/ (~/work/api)
-│   └── ...
-├── session-names/      ← custom names you assign (persisted)
-└── trash/               ← soft-deleted sessions (restore anytime)
+claudetree
+┌──────────────────────────┬──────────────────────────────────┐
+│ / filter sessions...     │                                  │
+│──────────────────────────│  openclaw tui fix                │
+│  4m  201msgs  openclaw   │  ~/claudetree                    │
+│ 13h   56msgs  WSL setup  │  ────────────────────────────    │
+│  1d   32msgs  auth refac │  You:                            │
+│  3d    8msgs  docker dbg │    the tui wasn't rendering      │
+│                          │    ctrl-/ on the sessions list   │
+│                          │                                  │
+│                          │  Claude:                         │
+│                          │    The issue is in the key       │
+│                          │    binding — ctrl+underscore...  │
+└──────────────────────────┴──────────────────────────────────┘
+ enter:preview  ^d:trash  ^r:rename  ^t:trash-bin  ^/:search  ^n:new
 ```
 
-So when you open claudetree, you're not just seeing sessions from the current directory — you're seeing your entire Claude Code history across every project on your machine.
+## Why
 
-**What it does:**
+If you use Claude Code heavily, you know the pain: you solved something last week but can't find the session. Your list is full of untitled chats. You re-explain context instead of building.
 
-- Shows every session from every project — age, message count, first message
-- Search inside session content using ripgrep (not just titles)
-- Rename sessions with names that persist in `~/.claude/session-names/`
-- Trash sessions to `~/.claude/trash/` with metadata — restore anytime
-- Toggle `ctrl-a` to filter current directory vs all projects
-- When you hit Enter, it exits and runs `claude --resume <id>`
+claudetree is the session manager Claude Code is missing — a keyboard-driven way to find the session you need and get back to work immediately.
 
-**What it doesn't do:**
+## Features
 
-- No network requests
-- No Claude API calls
-- No sending your data anywhere
+- **Split-pane browser** — sessions on the left, live markdown preview on the right
+- **Full-text search** — ripgrep-powered search inside session *content*, not just titles
+- **Rename sessions** — names persist in `~/.claude/session-names/`
+- **Trash & restore** — soft-delete sessions and restore them anytime
+- **Sort modes** — cycle through Recent, Oldest, Most messages, Fewest messages
+- **Directory filter** — view sessions from the current project or all projects
+- **Find in preview** — regex/literal search with case-mode controls and `n`/`N` navigation
+- **Right-click context menu** — full mouse support for all major actions
+- **Zero network** — reads directly from `~/.claude/projects/`, no API calls
 
-You stay in control. Claude Code takes over once you pick a session.
+## Getting started
 
----
+### Prerequisites
 
-## Requirements
+| Dependency | Purpose | Required |
+|------------|---------|----------|
+| [Go 1.22+](https://go.dev/dl/) | Build from source | Yes |
+| [Claude CLI](https://claude.ai/code) | Session resumption | Yes |
+| [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search | Optional |
 
-| Dependency | Purpose |
-|------------|---------|
-| Python ≥ 3.11 | Runtime |
-| [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search |
-| [Claude CLI](https://claude.ai/code) | Session resumption |
-
----
-
-## Install
+### Installation
 
 ```bash
-git clone https://github.com/ngash/claudetree ~/claudetree
-cd ~/claudetree && ./install.sh
+git clone https://github.com/Masalale/claudetree ~/claudetree
+cd ~/claudetree
+make install
 ```
 
-One-liner:
+This builds the binary and copies it to `~/.local/bin/cc`. Make sure that directory is in your `PATH`:
 
+<details>
+<summary>Add ~/.local/bin to PATH</summary>
+
+**bash:**
 ```bash
-git clone https://github.com/ngash/claudetree ~/claudetree && ~/claudetree/install.sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### ripgrep
+**zsh:**
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+</details>
+
+### Install ripgrep (optional, for content search)
 
 ```bash
 # Ubuntu/Debian
@@ -152,115 +101,100 @@ brew install ripgrep
 sudo pacman -S ripgrep
 ```
 
----
-
-## Uninstall
-
-```bash
-pip uninstall claudetree          # quick remove
-~/claudetree/uninstall.sh        # interactive (also cleans up PATH)
-```
-
-Your session data in `~/.claude/` stays untouched.
-
----
-
 ## Usage
 
 ```bash
-cc              # open session picker
-cc rm [id]     # trash a session
-cc restore [id] # restore from trash
-cc empty       # empty trash permanently
-cc help        # show help
+cc                  # open the session browser
+cc rm [sid]         # trash a session by ID, or open the trash browser
+cc restore [sid]    # restore a session, or open the trash browser
+cc empty            # permanently empty trash (asks for confirmation)
+cc help             # show help
 ```
 
----
+> [!TIP]
+> Set the `CLAUDE_CMD` environment variable to override the claude binary path, e.g. `CLAUDE_CMD=/usr/local/bin/claude cc`.
 
 ## Keybindings
 
-### Browse mode
+### Browse
 
 | Key | Action |
 |-----|--------|
-| `enter` | Resume session |
-| `ctrl-d` | Trash session |
-| `ctrl-r` | Rename session |
-| `ctrl-t` | Open trash bin |
-| `ctrl-a` | Toggle all projects |
-| `ctrl-/` | Search content |
-| `ctrl-n` | New session |
-| `↑ / ↓` | Navigate |
-| `escape` | Quit |
+| `j` / `k` or `↑` / `↓` | Navigate sessions |
+| `enter` | Open full-screen preview |
+| `/` | Filter sessions (live, multi-word AND) |
+| `ctrl+s` | Cycle sort order |
+| `ctrl+d` | Trash session |
+| `ctrl+r` | Rename session |
+| `ctrl+t` | Open trash bin |
+| `ctrl+a` | Directory picker / toggle all projects |
+| `ctrl+/` | Content search (ripgrep) |
+| `ctrl+n` | Start new Claude session |
+| `q` / `esc` | Quit |
 
-### Search mode
+### Preview
 
 | Key | Action |
 |-----|--------|
-| `enter` (on result) | Resume session |
+| `enter` | Resume session (`claude --resume <id>`) |
+| `ctrl+f` | Open find bar |
+| `n` / `N` | Next / previous match |
+| `ctrl+i` | Cycle case mode (smart → ignore → match) |
+| `ctrl+g` | Toggle regex / literal |
+| `esc` | Back to browse |
+
+### Search
+
+| Key | Action |
+|-----|--------|
 | `enter` (in input) | Run search |
-| `ctrl-d` | Trash session |
-| `ctrl-/` | Re-focus search |
-| `ctrl-i` | Cycle case mode (smart/ignore/match) |
-| `ctrl-g` | Toggle regex/literal mode |
-| `alt-c` | Cycle case mode (smart/ignore/match) |
-| `alt-r` | Toggle regex/literal mode |
-| `ctrl-b` | Back to browse |
-
-### Preview mode (after opening a session)
-
-| Key | Action |
-|-----|--------|
-| `ctrl-f` | Focus find input |
-| `ctrl-i` | Cycle case mode (smart/ignore/match) |
-| `ctrl-g` | Toggle regex/literal mode |
-| `alt-c` | Cycle case mode (smart/ignore/match) |
-| `alt-r` | Toggle regex/literal mode |
-| `n / N` | Next / previous match |
+| `enter` (on result) | Preview with search term pre-filled |
+| `ctrl+d` | Trash selected result |
+| `ctrl+/` | Re-focus search input |
+| `ctrl+i` / `alt+c` | Cycle case mode |
+| `ctrl+g` / `alt+r` | Toggle regex / literal |
+| `ctrl+b` / `esc` | Back to browse |
 
 ### Trash bin
 
 | Key | Action |
 |-----|--------|
 | `enter` | Restore session |
-| `ctrl-d` | Delete forever |
-| `ctrl-e` | Empty all trash |
-| `ctrl-b` | Back to browse |
+| `ctrl+d` | Delete forever |
+| `ctrl+e` | Empty all trash |
+| `ctrl+b` / `esc` | Back to browse |
 
----
+## How it works
 
-## Tech Stack
+claudetree reads sessions directly from `~/.claude/projects/` — the same `.jsonl` files Claude Code writes when you work in any editor. No API, no account, no sync.
 
-- **Python ≥ 3.11**
-- **[Textual](https://github.com/textualize/textual)** — TUI framework
-- **[ripgrep](https://github.com/BurntSushi/ripgrep)** — full-text search
-- **[Claude CLI](https://claude.ai/code)** — session resumption
+```
+~/.claude/
+├── projects/           ← sessions from every project on your machine
+│   ├── -home-you-app/
+│   ├── -home-you-work-api/
+│   └── ...
+├── session-names/      ← your custom names (persisted by claudetree)
+└── trash/              ← soft-deleted sessions (restorable anytime)
+```
 
----
+This means claudetree works with every Claude Code editor integration: VS Code, Cursor, Windsurf, the CLI, and any fork — they all write to the same place.
 
-## Future
+When you select a session, claudetree exits cleanly and hands off to `claude --resume <id>`.
 
-I'm exploring a bigger idea: one session manager for multiple AI coding harnesses (Claude Code, OpenCode, Gemini, Kilo Code, etc.).
+## Tech stack
 
-For now, this project focuses on **Claude Code**, and doing that well.
+- **[Go 1.22](https://go.dev)** — single binary, fast startup, no runtime required
+- **[Bubbletea](https://github.com/charmbracelet/bubbletea)** — TUI framework
+- **[Bubbles](https://github.com/charmbracelet/bubbles)** — text input and viewport components
+- **[Lipgloss](https://github.com/charmbracelet/lipgloss)** — terminal styling
+- **[Glamour](https://github.com/charmbracelet/glamour)** — markdown rendering in the preview pane
+- **[ripgrep](https://github.com/BurntSushi/ripgrep)** — full-text search (external binary, optional)
 
-If that vision interests you, I'd love to talk.
+## Build
 
----
-
-## Contributing
-
-If this pain is familiar, I'd love your help.
-
-- Open an issue
-- Share your workflow pain points
-- Submit a PR
-- Suggest features
-
-Let's build a better session experience together.
-
----
-
-## License
-
-MIT
+```bash
+make build      # outputs ./bin/cc
+make install    # builds and installs to ~/.local/bin/cc
+make clean      # removes ./bin/
+```

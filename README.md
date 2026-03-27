@@ -2,19 +2,20 @@
 
 # claudetree
 
-**A fast, single-binary terminal UI for managing Claude Code sessions.**
+**A fast, single-binary terminal UI for managing your Claude Code sessions.**
 
 [![Go 1.22+](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Alpha](https://img.shields.io/badge/status-alpha-orange?style=flat-square)]()
 
-[Features](#features) · [Installation](#installation) · [Uninstall](#uninstall) · [Usage](#usage) · [Configuration](#configuration) · [Keybindings](#keybindings) · [How it works](#how-it-works) · [Tech stack](#tech-stack) · [Build](#build)
+[Getting Started](#getting-started) · [Usage](#usage) · [Keybindings](#keybindings) · [How it works](#how-it-works)
 
 </div>
 
 > [!WARNING]
-> claudetree is in early alpha. Expect bugs and breaking changes.
+> This project is in early alpha. Expect bugs and breaking changes.
 
-Browse, search, rename, resume, trash, and restore Claude Code sessions without leaving the terminal.
+Browse, search, rename, resume, and clean up Claude Code sessions across every project on your machine — without leaving the terminal.
 
 ```
 claudetree
@@ -29,23 +30,32 @@ claudetree
 └──────────────────────────┴──────────────────────────────────┘
 ```
 
+## Why
+
+If you use Claude Code heavily, you know the pain: you solved something last week but can't find the session. Your list is full of untitled chats. You re-explain context instead of building.
+
+claudetree is the session manager Claude Code is missing — a keyboard-driven way to find the session you need and get back to work immediately.
+
 ## Features
 
-- Split-pane browser with a live preview
-- Full-text search across session content
-- Rename, trash, and restore sessions
-- Filter by project or browse all projects
-- Mouse support for the main session actions
-- Zero network calls; reads directly from disk
+- **Split-pane browser** — sessions on the left, live markdown preview on the right
+- **Full-text search** — ripgrep-powered search inside session *content*, not just titles
+- **Rename sessions** — names persist in `~/.claude/session-names/`
+- **Trash & restore** — soft-delete sessions and restore them anytime
+- **Sort modes** — cycle through Recent, Oldest, Most messages, Fewest messages
+- **Directory filter** — view sessions from the current project or all projects
+- **Find in preview** — regex/literal search with case-mode controls and `n`/`N` navigation
+- **Right-click context menu** — full mouse support for all major actions
+- **Zero network** — reads directly from `~/.claude/projects/`, no API calls
 
-## Installation
+## Getting started
 
 ### Prerequisites
 
 | Dependency | Purpose | Required |
 |------------|---------|----------|
 | [Go 1.22+](https://go.dev/dl/) | Build from source | Yes |
-| [Claude CLI](https://claude.ai/code) | Resume/new-session handoff | Yes |
+| [Claude CLI](https://claude.ai/code) | Session resumption | Yes |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search | Optional |
 
 ```bash

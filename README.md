@@ -48,24 +48,22 @@ claudetree
 | [Claude CLI](https://claude.ai/code) | Resume/new-session handoff | Yes |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search | Optional |
 
-Human first, then agent:
-
 ```bash
 # Human
 git clone https://github.com/Masalale/claudetree ~/claudetree && cd ~/claudetree && ./install.sh
-
+```
+```
 # Agent (non-interactive)
 git clone https://github.com/Masalale/claudetree ~/claudetree && cd ~/claudetree && make install
 ```
 
 ## Uninstall
 
-Human first, then agent:
-
 ```bash
 # Human
 cd ~/claudetree && ./uninstall.sh
-
+```
+```
 # Agent (non-interactive)
 cd ~/claudetree && ./uninstall.sh --yes
 ```

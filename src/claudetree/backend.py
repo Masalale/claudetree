@@ -289,8 +289,8 @@ def search_sessions(
 # ── Preview ──────────────────────────────────────────────────────────────────
 
 # Per-message character cap — keeps rendering snappy for large sessions
-_MSG_CAP = 3000
-_TURN_CAP = 30
+_MSG_CAP = 999999
+_TURN_CAP = 999999
 
 
 def preview_session(sid: str) -> str:
@@ -310,17 +310,12 @@ def preview_session(sid: str) -> str:
 
     parts: list[str] = []
 
-    # ── Header ───────────────────────────────────────────────────────────────
     if name:
         parts.append(f"## {name}")
         parts.append(f"`{short_path}`")
     else:
         parts.append(f"## `{short_path}`")
-    parts.append("")
-    parts.append("---")
-    parts.append("")
 
-    # ── Conversation turns ────────────────────────────────────────────────────
     n = 0
     with open(filepath, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
@@ -350,31 +345,18 @@ def preview_session(sid: str) -> str:
                 n += 1
 
                 if rt == "user":
-                    # User messages in a blockquote so they stand out visually
                     parts.append("**You**")
-                    parts.append("")
-                    msg = t[:_MSG_CAP]
-                    if len(t) > _MSG_CAP:
-                        msg += f"\n\n*… ({len(t) - _MSG_CAP} more chars)*"
+                    msg = t[:500]
                     quoted = "\n".join(
                         f"> {ln}" if ln.strip() else ">" for ln in msg.split("\n")
                     )
                     parts.append(quoted)
                 else:
-                    # Claude's responses are already markdown — render as-is
                     parts.append("**Claude**")
-                    parts.append("")
-                    msg = t[:_MSG_CAP]
-                    if len(t) > _MSG_CAP:
-                        msg += f"\n\n*… ({len(t) - _MSG_CAP} more chars)*"
-                    parts.append(msg)
-
-                parts.append("")
-                parts.append("---")
-                parts.append("")
+                    parts.append(t[:2000])
 
                 if n >= _TURN_CAP:
-                    parts.append(f"*Preview capped at {_TURN_CAP} messages.*")
+                    parts.append(f"*… {_TURN_CAP} messages shown *")
                     break
             except Exception:
                 pass

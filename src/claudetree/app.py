@@ -15,6 +15,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
+from textual.theme import Theme
 from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
@@ -53,15 +54,11 @@ class SessionItem(ListItem):
 
     def compose(self) -> ComposeResult:
         s = self.session
-        markup = f"[dim]{s.age:>4}  {s.msgs:>3}msgs[/dim]  "
-        if s.name:
-            markup += f"[bold cyan]{escape(s.name)}[/bold cyan]"
-            if s.first_msg:
-                markup += f"  [dim]{escape(s.first_msg[:35])}[/dim]"
-        else:
-            markup += escape(s.first_msg[:50] if s.first_msg else s.sid[:24])
+        markup = f"[dim]{s.age}[/dim]  "
+        name_or_sid = s.name if s.name else s.sid[:24]
+        markup += f"[bold cyan]{escape(name_or_sid)}[/bold cyan]  "
         if self._show_project and s.project_id:
-            markup += f"  [dim]{escape(s.project_path)}[/dim]"
+            markup += f"[bold magenta]{escape(s.project_path)}[/bold magenta]"
         yield Label(markup)
 
     def on_mouse_down(self, event) -> None:
@@ -765,7 +762,7 @@ _SPLIT_CSS = """
     height: 1fr;
 }
 #left {
-    width: 45%;
+    width: 50%;
     border-right: solid $panel-darken-1;
     layout: vertical;
 }
@@ -774,7 +771,7 @@ _SPLIT_CSS = """
     border: none;
 }
 #right {
-    width: 55%;
+    width: 50%;
 }
 #preview-scroll {
     height: 1fr;
@@ -784,12 +781,12 @@ _SPLIT_CSS = """
 }
 """
 
-_SORT_CYCLE = ["recent", "oldest", "msgs_desc", "msgs_asc"]
+_SORT_CYCLE = ["folder_asc", "folder_desc", "recent", "oldest"]
 _SORT_LABEL = {
+    "folder_asc": "↓ Folder",
+    "folder_desc": "↑ Folder",
     "recent": "↓ Recent",
     "oldest": "↑ Oldest",
-    "msgs_desc": "↓ Msgs",
-    "msgs_asc": "↑ Msgs",
 }
 
 
@@ -848,7 +845,7 @@ class BrowseScreen(Screen[None]):
         self._sessions: list[Session] = []
         self._filtered: list[Session] = []
         self._preview_timer: Optional[Timer] = None
-        self._sort: str = "recent"
+        self._sort: str = "folder_asc"
         self._ctx_session: Optional[Session] = None
 
     def compose(self) -> ComposeResult:
@@ -897,10 +894,12 @@ class BrowseScreen(Screen[None]):
 
         if self._sort == "oldest":
             self._filtered.sort(key=lambda s: s.sort_time)
-        elif self._sort == "msgs_desc":
-            self._filtered.sort(key=lambda s: s.msgs, reverse=True)
-        elif self._sort == "msgs_asc":
-            self._filtered.sort(key=lambda s: s.msgs)
+        elif self._sort == "folder_asc":
+            self._filtered.sort(key=lambda s: s.sort_time, reverse=True)
+            self._filtered.sort(key=lambda s: s.project_path.lower())
+        elif self._sort == "folder_desc":
+            self._filtered.sort(key=lambda s: s.sort_time, reverse=True)
+            self._filtered.sort(key=lambda s: s.project_path.lower(), reverse=True)
 
         lv = self.query_one("#sessions", ListView)
         lv.clear()
@@ -1629,6 +1628,23 @@ class ClaudetreeApp(App[tuple[str, str] | tuple[str] | None]):
         self._cwd = cwd or os.getcwd()
 
     def on_mount(self) -> None:
+        self.register_theme(
+            Theme(
+                name="monokai",
+                primary="#A6E22E",
+                secondary="#F92672",
+                accent="#E6DB74",
+                foreground="#F8F8F2",
+                background="#272822",
+                success="#A6E22E",
+                warning="#E6DB74",
+                error="#F92672",
+                surface="#272822",
+                panel="#272822",
+                dark=True,
+            )
+        )
+        self.theme = "monokai"
         if self._initial_screen == "trash":
             self.push_screen(TrashScreen(cwd=self._cwd))
         else:

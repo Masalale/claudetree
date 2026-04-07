@@ -2,9 +2,9 @@
 
 # claudetree
 
-**A fast, single-binary terminal UI for managing your Claude Code sessions.**
+**A terminal UI for managing Claude Code sessions.**
 
-[![Go 1.22+](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat-square&logo=go)](https://go.dev/dl/)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 [![Alpha](https://img.shields.io/badge/status-alpha-orange?style=flat-square)]()
 
@@ -21,20 +21,13 @@ Browse, search, rename, resume, and clean up Claude Code sessions across every p
 claudetree
 ┌──────────────────────────┬──────────────────────────────────┐
 │ / filter sessions...     │                                  │
-│──────────────────────────│  openclaw tui fix                │
-│  4m  201msgs  openclaw   │  ~/claudetree                    │
-│ 13h   56msgs  WSL setup  │  ────────────────────────────    │
-│  1d   32msgs  auth refac │  You:                            │
-│  3d    8msgs  docker dbg │    the tui wasn't rendering      │
-│                          │    ctrl-/ on the sessions list   │
+│──────────────────────────│  session preview                   │
+│  4m  openclaw   ~/proj  │  ────────────────────────────    │
+│ 13h  WSL setup   ~/wsl  │  You                             │
+│  1d  auth refac  ~/auth  │  > what was I working on again?  │
+│  3d  docker dbg ~/dock  │                                  │
 └──────────────────────────┴──────────────────────────────────┘
 ```
-
-## Why
-
-If you use Claude Code heavily, you know the pain: you solved something last week but can't find the session. Your list is full of untitled chats. You re-explain context instead of building.
-
-claudetree is the session manager Claude Code is missing — a keyboard-driven way to find the session you need and get back to work immediately.
 
 ## Features
 
@@ -42,7 +35,7 @@ claudetree is the session manager Claude Code is missing — a keyboard-driven w
 - **Full-text search** — ripgrep-powered search inside session *content*, not just titles
 - **Rename sessions** — names persist in `~/.claude/session-names/`
 - **Trash & restore** — soft-delete sessions and restore them anytime
-- **Sort modes** — cycle through Recent, Oldest, Most messages, Fewest messages
+- **Sort modes** — cycle through Folder (A-Z/Z-A), Recent, Oldest
 - **Directory filter** — view sessions from the current project or all projects
 - **Find in preview** — regex/literal search with case-mode controls and `n`/`N` navigation
 - **Right-click context menu** — full mouse support for all major actions
@@ -54,7 +47,7 @@ claudetree is the session manager Claude Code is missing — a keyboard-driven w
 
 | Dependency | Purpose | Required |
 |------------|---------|----------|
-| [Go 1.22+](https://go.dev/dl/) | Build from source | Yes |
+| [Python 3.11+](https://www.python.org/) | Runtime | Yes |
 | [Claude CLI](https://claude.ai/code) | Session resumption | Yes |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | Content search | Optional |
 
@@ -167,23 +160,16 @@ Project IDs are encoded paths: `-home-you-app` maps back to `/home/you/app`.
 
 When you resume a session, claudetree exits cleanly and execs into `claude --resume <sid>`.
 
-> [!IMPORTANT]
-> The Go implementation is the source of truth; legacy Python/Textual artifacts may still exist in the repository for reference.
-
 ## Tech stack
 
-- Go 1.22
-- Bubbletea
-- Bubbles
-- Lipgloss
-- Glamour
+- Python 3.11+
+- [Textual](https://textual.textualize.io/)
+- [Rich](https://rich.readthedocs.io/)
 - ripgrep (optional)
 
 ## Build
 
 ```bash
-make build      # build ./bin/cc
-make install    # build and copy to ~/.local/bin/cc
-make uninstall  # remove ~/.local/bin/cc
-make clean      # remove ./bin/
+make install    # install to ~/.local/bin/cc
+make uninstall  # remove from ~/.local/bin/cc
 ```

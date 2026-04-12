@@ -20,9 +20,9 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from .backend import (
+    PROJECTS_DIR,
     Session,
     TrashEntry,
-    PROJECTS_DIR,
     empty_trash,
     list_sessions,
     list_trash,
@@ -33,6 +33,13 @@ from .backend import (
     search_sessions,
     set_name,
     trash_session,
+)
+from .presentation import (
+    CommandSpec,
+    filter_commands,
+    session_row_text,
+    status_strip_text,
+    trash_row_text,
 )
 
 
@@ -53,13 +60,7 @@ class SessionItem(ListItem):
         self._show_project = show_project
 
     def compose(self) -> ComposeResult:
-        s = self.session
-        markup = f"[dim]{s.age}[/dim]  "
-        name_or_sid = s.name if s.name else s.sid[:24]
-        markup += f"[bold cyan]{escape(name_or_sid)}[/bold cyan]  "
-        if self._show_project and s.project_id:
-            markup += f"[bold magenta]{escape(s.project_path)}[/bold magenta]"
-        yield Label(markup)
+        yield Static(session_row_text(self.session, show_project=self._show_project))
 
     def on_mouse_down(self, event) -> None:
         if event.button == 3:
@@ -86,13 +87,7 @@ class TrashItem(ListItem):
         self.entry = entry
 
     def compose(self) -> ComposeResult:
-        e = self.entry
-        markup = (
-            f"[dim]{e.when:>8}[/dim]  "
-            f"[bold red]{escape(e.name or e.sid[:24] + '...')}[/bold red]  "
-            f"[dim]{escape(e.project_path)}[/dim]"
-        )
-        yield Label(markup)
+        yield Static(trash_row_text(self.entry))
 
     def on_mouse_down(self, event) -> None:
         if event.button == 3:
@@ -128,6 +123,7 @@ class FilterInput(Input):
         "ctrl+b",
         "ctrl+i",
         "ctrl+g",
+        "ctrl+k",
         "alt+c",
         "alt+r",
     }
@@ -275,6 +271,165 @@ class ConfirmDialog(ModalScreen[bool]):
             self.dismiss(False)
 
 
+class PaletteInput(Input):
+    """Search input for the fuzzy command palette."""
+
+    def on_key(self, event) -> None:
+        palette = getattr(self.screen, "move_palette", None)
+        accept = getattr(self.screen, "accept_palette", None)
+        cancel = getattr(self.screen, "cancel_palette", None)
+        if event.key == "down":
+            if callable(palette):
+                palette(1)
+            event.prevent_default()
+        elif event.key == "up":
+            if callable(palette):
+                palette(-1)
+            event.prevent_default()
+        elif event.key == "enter":
+            if callable(accept):
+                accept()
+            event.prevent_default()
+        elif event.key == "escape":
+            if callable(cancel):
+                cancel()
+            event.stop()
+
+
+class CommandPaletteScreen(ModalScreen[str | None]):
+    """Fuzzy command palette for high-value actions."""
+
+    DEFAULT_CSS = """
+    CommandPaletteScreen {
+        align: center middle;
+        background: $background 78%;
+    }
+    #palette {
+        width: 82;
+        max-width: 96%;
+        border: round $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+    #palette-title {
+        height: 1;
+        color: $foreground;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+    #palette-input {
+        height: 3;
+        border: tall $primary 40%;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+    #palette-input:focus {
+        border: tall $primary;
+        background: $boost;
+        color: $text;
+    }
+    #palette-list {
+        height: 11;
+        border: none;
+        background: $surface;
+    }
+    #palette-list ListItem {
+        padding: 0 1;
+    }
+    #palette-list ListItem.--highlight {
+        background: $primary 35%;
+    }
+    #palette-hint {
+        height: 1;
+        margin-top: 1;
+        color: $text-muted;
+    }
+    """
+
+    def __init__(self, commands: list[CommandSpec], title: str, hint: str = "") -> None:
+        super().__init__()
+        self._commands = commands
+        self._title = title
+        self._hint = hint or "Type to filter • Enter to run • Esc to cancel"
+        self._visible: list[CommandSpec] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette"):
+            yield Label(self._title, id="palette-title")
+            yield PaletteInput(placeholder="Filter commands…", id="palette-input")
+            yield ListView(id="palette-list")
+            yield Label(self._hint, id="palette-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#palette-input", PaletteInput).focus()
+        self._render("")
+
+    def _render(self, query: str) -> None:
+        self._visible = filter_commands(query, self._commands)
+        lv = self.query_one("#palette-list", ListView)
+        lv.clear()
+        if not self._visible:
+            lv.append(ListItem(Label("No matches", classes="dim")))
+            return
+        for cmd in self._visible:
+            details = cmd.key.replace("_", " ")
+            if cmd.context:
+                details = f"{details} · {' · '.join(cmd.context)}"
+            lv.append(
+                ListItem(
+                    Static(
+                        RichText.from_markup(
+                            f"[bold]{escape(cmd.label)}[/bold] [dim]{escape(details)}[/dim]"
+                        )
+                    )
+                )
+            )
+        lv.index = 0
+
+    def move_palette(self, direction: int) -> None:
+        lv = self.query_one("#palette-list", ListView)
+        if not self._visible:
+            return
+        if lv.index is None:
+            lv.index = 0
+            return
+        lv.index = (lv.index + direction) % len(self._visible)
+
+    def accept_palette(self) -> None:
+        if not self._visible:
+            return
+        lv = self.query_one("#palette-list", ListView)
+        idx = lv.index if lv.index is not None else 0
+        idx = max(0, min(idx, len(self._visible) - 1))
+        self.dismiss(self._visible[idx].key)
+
+    def cancel_palette(self) -> None:
+        self.dismiss(None)
+
+    @on(Input.Changed, "#palette-input")
+    def _changed(self, event: Input.Changed) -> None:
+        self._render(event.value)
+
+    @on(Input.Submitted, "#palette-input")
+    def _submitted(self, event: Input.Submitted) -> None:
+        self.accept_palette()
+
+    @on(ListView.Selected, "#palette-list")
+    def _selected(self, event: ListView.Selected) -> None:
+        self.accept_palette()
+
+
+def run_command_palette(app, title: str, commands: list[CommandSpec], dispatch, hint: str = "Type to filter • Enter to run • Esc to cancel"):
+    def _on_select(key: str | None) -> None:
+        if key:
+            dispatch(key)
+
+    app.push_screen(CommandPaletteScreen(commands, title, hint), _on_select)
+
+
 # ── Inline context-menu with backdrop ────────────────────────────────────────
 
 
@@ -407,6 +562,7 @@ class SessionPreviewScreen(Screen[None]):
         Binding("enter", "confirm", "Resume", show=True),
         Binding("escape", "cancel", "Back", show=True),
         Binding("ctrl+f", "focus_find", "Find text", show=True),
+        Binding("ctrl+k", "open_palette", "Commands", show=True),
         Binding("ctrl+i", "cycle_case_mode", "Case mode", show=False),
         Binding("ctrl+g", "toggle_regex", "Regex", show=False),
         Binding("alt+c", "cycle_case_mode", "Case mode", show=True),
@@ -773,6 +929,14 @@ _SPLIT_CSS = """
 #right {
     width: 50%;
 }
+#status-strip {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    border-bottom: solid $panel-darken-1;
+    content-align: left middle;
+    color: $text;
+}
 #preview-scroll {
     height: 1fr;
 }
@@ -797,6 +961,7 @@ class BrowseScreen(Screen[None]):
     """Main session list — vim-style / filter, ctrl+a directory picker."""
 
     BINDINGS = [
+        Binding("ctrl+k", "open_palette", "Commands", show=True),
         Binding("ctrl+d", "trash_session", "Trash", show=True),
         Binding("ctrl+r", "rename_session", "Rename", show=True),
         Binding("ctrl+t", "open_trash", "Trash bin", show=True),
@@ -815,6 +980,14 @@ class BrowseScreen(Screen[None]):
         + """
     BrowseScreen {
         layers: base backdrop overlay;
+    }
+    #status-strip {
+        height: 1;
+        padding: 0 1;
+        background: $panel;
+        border-bottom: solid $panel-darken-1;
+        content-align: left middle;
+        color: $text;
     }
     #filter-bar {
         height: 3;
@@ -850,6 +1023,7 @@ class BrowseScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield Label("", id="status-strip")
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield ListView(id="sessions")
@@ -864,6 +1038,7 @@ class BrowseScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self._update_subtitle()
+        self._update_status()
         self._load()
         self.query_one("#sessions", ListView).focus()
 
@@ -874,10 +1049,28 @@ class BrowseScreen(Screen[None]):
         else:
             self.app.sub_title = f"{short}  {_SORT_LABEL[self._sort]}"
 
+    def _status_label(self) -> str:
+        return "all projects" if self._all_projects else self._cwd.replace(str(os.path.expanduser("~")), "~")
+
+    def _update_status(self) -> None:
+        filter_value = self.query_one("#filter", FilterInput).value.strip()
+        self.query_one("#status-strip", Label).update(
+            status_strip_text(
+                screen_label="browse",
+                scope_label=self._status_label(),
+                sort_label=_SORT_LABEL[self._sort],
+                filter_label=filter_value or "—",
+                count=len(self._filtered),
+                mode_label="cmd+k palette",
+                command_hint="enter=resume • /=filter",
+            )
+        )
+
     def _load(self) -> None:
         self._sessions = list_sessions(cwd=self._cwd, all_projects=self._all_projects)
         fi = self.query_one("#filter", FilterInput)
         self._apply_filter(fi.value)
+        self._update_status()
 
     def _apply_filter(self, query: str) -> None:
         q = query.lower().split()
@@ -909,6 +1102,7 @@ class BrowseScreen(Screen[None]):
             self._load_preview(self._filtered[0].sid)
         else:
             self.query_one("#preview", Static).update("*No sessions found.*")
+        self._update_status()
 
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
@@ -944,6 +1138,7 @@ class BrowseScreen(Screen[None]):
         fi.value = ""
         self._apply_filter("")
         self.query_one("#filter-bar").display = False
+        self._update_status()
         self.query_one("#sessions", ListView).focus()
 
     # ── list navigation (called by FilterInput) ───────────────────────────────
@@ -1024,6 +1219,7 @@ class BrowseScreen(Screen[None]):
         self._sort = _SORT_CYCLE[(idx + 1) % len(_SORT_CYCLE)]
         self._apply_filter(self.query_one("#filter", FilterInput).value)
         self._update_subtitle()
+        self._update_status()
         self.notify(f"Sort: {_SORT_LABEL[self._sort]}", timeout=1)
 
     def action_content_search(self) -> None:
@@ -1039,8 +1235,91 @@ class BrowseScreen(Screen[None]):
 
         self.app.push_screen(InputDialog("Search session content (ripgrep):"), on_query)
 
+    def action_open_palette(self) -> None:
+        commands = [
+            CommandSpec("resume", "Resume session", keywords=("open", "launch"), context=("preview",)),
+            CommandSpec("rename", "Rename session", keywords=("label", "name")),
+            CommandSpec("trash", "Trash session", keywords=("delete", "remove")),
+            CommandSpec("search", "Search session content", keywords=("rg", "ripgrep")),
+            CommandSpec("new_search", "Jump to search box", keywords=("search", "query")),
+            CommandSpec("filter", "Filter current list", keywords=("browse", "query")),
+            CommandSpec("scope", "Change scope", keywords=("all projects", "directory")),
+            CommandSpec("sort", "Cycle sort order", keywords=("recent", "oldest", "folder")),
+            CommandSpec("trashbin", "Open trash bin", keywords=("restore", "recovery")),
+            CommandSpec("new", "Start new session", keywords=("fresh", "create")),
+            CommandSpec("quit", "Quit app", keywords=("exit",)),
+        ]
+
+        def dispatch(key: str) -> None:
+            if key == "resume":
+                s = self._current_session()
+                if s:
+                    self.app.push_screen(SessionPreviewScreen(s))
+            elif key == "rename":
+                self.action_rename_session()
+            elif key == "trash":
+                self.action_trash_session()
+            elif key == "search":
+                self.action_content_search()
+            elif key == "new_search":
+                self.action_start_filter()
+            elif key == "filter":
+                self.action_start_filter()
+            elif key == "scope":
+                self.action_toggle_all()
+            elif key == "sort":
+                self.action_cycle_sort()
+            elif key == "trashbin":
+                self.action_open_trash()
+            elif key == "new":
+                self.action_new_session()
+            elif key == "quit":
+                self.action_quit_app()
+
+        run_command_palette(self.app, "Command palette", commands, dispatch, hint="Enter runs • Esc closes • use arrows or type")
+
     def action_new_session(self) -> None:
         self.app.exit(("new",))
+
+    def action_open_palette(self) -> None:
+        commands = [
+            CommandSpec("resume", "Resume session", keywords=("open", "launch"), context=("preview",)),
+            CommandSpec("rename", "Rename session", keywords=("label", "name")),
+            CommandSpec("trash", "Trash session", keywords=("delete", "remove")),
+            CommandSpec("search", "Search session content", keywords=("rg", "ripgrep")),
+            CommandSpec("filter", "Filter current list", keywords=("browse", "query")),
+            CommandSpec("scope", "Change scope", keywords=("all projects", "directory")),
+            CommandSpec("sort", "Cycle sort order", keywords=("recent", "oldest", "folder")),
+            CommandSpec("trashbin", "Open trash bin", keywords=("restore", "recovery")),
+            CommandSpec("new", "Start new session", keywords=("fresh", "create")),
+            CommandSpec("quit", "Quit app", keywords=("exit",)),
+        ]
+
+        def dispatch(key: str) -> None:
+            if key == "resume":
+                s = self._current_session()
+                if s:
+                    self.app.push_screen(SessionPreviewScreen(s))
+            elif key == "rename":
+                self.action_rename_session()
+            elif key == "trash":
+                self.action_trash_session()
+            elif key == "search":
+                self.action_content_search()
+            elif key == "filter":
+                self.action_start_filter()
+            elif key == "scope":
+                self.action_toggle_all()
+            elif key == "sort":
+                self.action_cycle_sort()
+            elif key == "trashbin":
+                self.action_open_trash()
+            elif key == "new":
+                self.action_new_session()
+            elif key == "quit":
+                self.action_quit_app()
+
+        run_command_palette(self.app, "Command palette", commands, dispatch, hint="Enter runs • Esc closes • use arrows or type")
 
     def action_quit_app(self) -> None:
         self.app.exit(None)

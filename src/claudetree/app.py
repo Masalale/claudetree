@@ -20,6 +20,8 @@ from textual.timer import Timer
 from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
 
 from .backend import (
+    HARNESSES,
+    HARNESS_MAP,
     PROJECTS_DIR,
     Session,
     TrashEntry,
@@ -101,6 +103,60 @@ class TrashItem(ListItem):
             event.stop()
 
 
+def _session_supports_trash(session: Session) -> bool:
+    harness = HARNESS_MAP.get(session.source)
+    return harness.supports_trash if harness else True
+
+
+def _guard_trashable_session(screen: Screen[None], session: Session) -> bool:
+    harness = HARNESS_MAP.get(session.source)
+    if harness and not harness.supports_trash:
+        screen.notify(f"{harness.label} sessions cannot be trashed.", severity="warning")
+        return False
+    return True
+
+
+class HarnessRailItem(ListItem):
+    """Single row in the harness rail sidebar."""
+
+    HARNESS_ALL = ""  # sentinel for the "All" row
+
+    def __init__(self, harness_id: str, icon: str, label: str, color: str, count: int = 0) -> None:
+        super().__init__()
+        self.harness_id = harness_id
+        self._icon = icon
+        self._label = label
+        self._color = color
+        self._count = count
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._make_text())
+
+    def _make_text(self, compact: bool = False) -> RichText:
+        text = RichText()
+        style = self._color if self._color else "bold"
+        if compact:
+            text.append(self._icon, style=f"bold {style}")
+        else:
+            text.append(f"{self._icon} ", style=style)
+            text.append(self._label, style=f"bold {style}")
+            text.append(f"  {self._count}", style="dim")
+        return text
+
+    def set_count(self, count: int, compact: bool = False) -> None:
+        self._count = count
+        try:
+            self.query_one(Static).update(self._make_text(compact=compact))
+        except Exception:
+            pass
+
+    def refresh_label(self, compact: bool = False) -> None:
+        try:
+            self.query_one(Static).update(self._make_text(compact=compact))
+        except Exception:
+            pass
+
+
 # ── Filter input ──────────────────────────────────────────────────────────────
 
 
@@ -116,7 +172,6 @@ class FilterInput(Input):
         "ctrl+d",
         "ctrl+r",
         "ctrl+t",
-        "ctrl+n",
         "ctrl+s",
         "ctrl+underscore",
         "ctrl+slash",
@@ -189,6 +244,38 @@ class InputDialog(ModalScreen[str | None]):
         background: $boost;
         color: $text;
         border: tall $primary;
+    }
+    #dialog-input > .input--value {
+        color: $text;
+        text-style: bold;
+    }
+    #dialog-input > .input--cursor {
+        background: $input-cursor-background;
+        color: $input-cursor-foreground;
+        text-style: $input-cursor-text-style;
+    }
+    #dialog-input > .input--placeholder {
+        color: $text-disabled;
+    }
+    #dialog-input:ansi {
+        background: ansi_default;
+        color: ansi_white;
+        border: tall ansi_bright_black;
+    }
+    #dialog-input:ansi:focus {
+        background: ansi_default;
+        color: ansi_white;
+        border: tall ansi_white;
+    }
+    #dialog-input:ansi > .input--value {
+        color: ansi_white;
+    }
+    #dialog-input:ansi > .input--cursor {
+        background: ansi_white;
+        color: ansi_black;
+    }
+    #dialog-input:ansi > .input--placeholder {
+        color: ansi_bright_black;
     }
     """
 
@@ -353,7 +440,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         super().__init__()
         self._commands = commands
         self._title = title
-        self._hint = hint or "Type to filter • Enter to run • Esc to cancel"
+        self._hint = hint or "Type or use arrows • Enter runs • Esc closes"
         self._visible: list[CommandSpec] = []
 
     def compose(self) -> ComposeResult:
@@ -373,6 +460,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         lv.clear()
         if not self._visible:
             lv.append(ListItem(Label("No matches", classes="dim")))
+            lv.index = None
             return
         for cmd in self._visible:
             details = cmd.key.replace("_", " ")
@@ -387,7 +475,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
                     )
                 )
             )
-        lv.index = 0
+        lv.index = 0 if query.strip() else None
 
     def move_palette(self, direction: int) -> None:
         lv = self.query_one("#palette-list", ListView)
@@ -402,7 +490,9 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         if not self._visible:
             return
         lv = self.query_one("#palette-list", ListView)
-        idx = lv.index if lv.index is not None else 0
+        if lv.index is None:
+            return
+        idx = lv.index
         idx = max(0, min(idx, len(self._visible) - 1))
         self.dismiss(self._visible[idx].key)
 
@@ -561,12 +651,16 @@ class SessionPreviewScreen(Screen[None]):
     BINDINGS = [
         Binding("enter", "confirm", "Resume", show=True),
         Binding("escape", "cancel", "Back", show=True),
-        Binding("ctrl+f", "focus_find", "Find text", show=True),
-        Binding("ctrl+k", "open_palette", "Commands", show=True),
+        Binding("f", "focus_find", "Find text", show=True),
+        Binding("ctrl+f", "focus_find", "Find text", show=False),
+        Binding("p", "open_palette", "Actions", show=True),
+        Binding("ctrl+k", "open_palette", "Actions", show=False),
+        Binding("c", "cycle_case_mode", "Case mode", show=True),
         Binding("ctrl+i", "cycle_case_mode", "Case mode", show=False),
+        Binding("r", "toggle_regex", "Regex", show=True),
         Binding("ctrl+g", "toggle_regex", "Regex", show=False),
-        Binding("alt+c", "cycle_case_mode", "Case mode", show=True),
-        Binding("alt+r", "toggle_regex", "Regex", show=True),
+        Binding("alt+c", "cycle_case_mode", "Case mode", show=False),
+        Binding("alt+r", "toggle_regex", "Regex", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
     ]
 
@@ -649,7 +743,7 @@ class SessionPreviewScreen(Screen[None]):
         with Horizontal(id="find-bar"):
             yield Input(
                 value=self._initial_search,
-                placeholder="Find in preview (regex). Ctrl+I toggles case; n/N jumps.",
+                placeholder="Find in preview. Enter applies; r toggles regex; c toggles case.",
                 id="find-input",
             )
             yield Label("", id="match-info")
@@ -684,7 +778,7 @@ class SessionPreviewScreen(Screen[None]):
                 "[dim]regex[/dim]" if self._regex_mode else "[dim]literal[/dim]"
             )
             mi.update(
-                f"[dim]Ctrl+F find • Ctrl+I/Alt+C case • Ctrl+G/Alt+R regex • n/N next[/dim]  {case_indicator} {regex_indicator}"
+                f"[dim]f find • c case • r regex • n/N next[/dim]  {case_indicator} {regex_indicator}"
             )
             return
 
@@ -785,8 +879,34 @@ class SessionPreviewScreen(Screen[None]):
         if self._raw_text:
             self._render_preview()
 
+    def action_open_palette(self) -> None:
+        commands = [
+            CommandSpec("resume", "Resume session", keywords=("open", "launch")),
+            CommandSpec("find", "Find in preview", keywords=("search", "text", "match")),
+            CommandSpec("back", "Back", keywords=("close", "cancel")),
+            CommandSpec("quit", "Quit app", keywords=("exit",)),
+        ]
+
+        def dispatch(key: str) -> None:
+            if key == "resume":
+                self.action_confirm()
+            elif key == "find":
+                self.action_focus_find()
+            elif key == "back":
+                self.action_cancel()
+            elif key == "quit":
+                self.action_quit_app()
+
+        run_command_palette(
+            self.app,
+            "Preview commands",
+            commands,
+            dispatch,
+            hint="Enter runs • Esc closes • type to filter",
+        )
+
     def action_confirm(self) -> None:
-        self.app.exit(("resume", self._session.sid))
+        self.app.exit(("resume", self._session.sid, self._session.source))
 
     def action_cancel(self) -> None:
         self.app.pop_screen()
@@ -958,20 +1078,26 @@ _SORT_LABEL = {
 
 
 class BrowseScreen(Screen[None]):
-    """Main session list — vim-style / filter, ctrl+a directory picker."""
+    """Main session list — filter current list with /, open scope picker with a."""
 
     BINDINGS = [
-        Binding("ctrl+k", "open_palette", "Commands", show=True),
-        Binding("ctrl+d", "trash_session", "Trash", show=True),
-        Binding("ctrl+r", "rename_session", "Rename", show=True),
-        Binding("ctrl+t", "open_trash", "Trash bin", show=True),
-        Binding("ctrl+a", "toggle_all", "Dir filter", show=True),
-        Binding("ctrl+s", "cycle_sort", "Sort", show=True),
-        Binding("ctrl+underscore", "content_search", "Search", show=True),
+        Binding("p", "open_session_menu", "Menu", show=True),
+        Binding("ctrl+k", "open_palette", "Palette", show=False),
+        Binding("d", "trash_session", "Trash", show=True),
+        Binding("ctrl+d", "trash_session", "Trash", show=False),
+        Binding("r", "rename_session", "Rename", show=True),
+        Binding("ctrl+r", "rename_session", "Rename", show=False),
+        Binding("t", "open_trash", "Trash bin", show=True),
+        Binding("ctrl+t", "open_trash", "Trash bin", show=False),
+        Binding("a", "toggle_all", "Scope", show=True),
+        Binding("ctrl+a", "toggle_all", "Scope", show=False),
+        Binding("o", "cycle_sort", "Sort", show=True),
+        Binding("ctrl+s", "cycle_sort", "Sort", show=False),
+        Binding("s", "content_search", "Search", show=True),
+        Binding("ctrl+underscore", "content_search", "Search", show=False),
         Binding("ctrl+slash", "content_search", "Search", show=False),
-        Binding("ctrl+n", "new_session", "New", show=True),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
-        Binding("escape", "quit_app", "Quit", show=False),
+        Binding("q", "quit_app", "Quit", show=False),
         Binding("/", "start_filter", "Filter", show=True),
     ]
 
@@ -1008,23 +1134,49 @@ class BrowseScreen(Screen[None]):
         color: $text-muted;
         background: $panel;
     }
+    /* harness rail */
+    BrowseScreen #rail {
+        width: 18;
+        border-right: solid $panel-darken-1;
+        layout: vertical;
+    }
+    BrowseScreen #harness-rail {
+        height: 1fr;
+        border: none;
+    }
+    BrowseScreen #left {
+        width: 1fr;
+    }
     """
     )
+
+    _HINTS = [
+        "enter=resume  /=filter  p=menu",
+        "d=trash  r=rename  t=trash-bin",
+        "a=scope  s=search  o=sort",
+    ]
 
     def __init__(self, all_projects: bool = True, cwd: Optional[str] = None) -> None:
         super().__init__()
         self._all_projects = all_projects
         self._cwd = cwd or os.getcwd()
+        self._all_sessions: list[Session] = []
         self._sessions: list[Session] = []
         self._filtered: list[Session] = []
         self._preview_timer: Optional[Timer] = None
+        self._hint_timer: Optional[Timer] = None
+        self._hint_idx: int = 0
         self._sort: str = "folder_asc"
         self._ctx_session: Optional[Session] = None
+        self._harness_filter: Optional[str] = None  # None = All harnesses
+        self._rail_collapsed: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
         yield Label("", id="status-strip")
         with Horizontal(id="main"):
+            with Vertical(id="rail"):
+                yield ListView(id="harness-rail")
             with Vertical(id="left"):
                 yield ListView(id="sessions")
                 with Horizontal(id="filter-bar"):
@@ -1039,18 +1191,44 @@ class BrowseScreen(Screen[None]):
     def on_mount(self) -> None:
         self._update_subtitle()
         self._update_status()
+        self._populate_rail()
         self._load()
         self.query_one("#sessions", ListView).focus()
+        self._hint_timer = self.set_interval(4, self._rotate_hint)
+
+    def _rotate_hint(self) -> None:
+        self._hint_idx = (self._hint_idx + 1) % len(self._HINTS)
+        self._update_status()
+
+    def on_resize(self, event) -> None:
+        collapsed = self.app.size.width < 80
+        if collapsed != self._rail_collapsed:
+            self._rail_collapsed = collapsed
+            rail_widget = self.query_one("#rail")
+            if collapsed:
+                rail_widget.styles.width = 5
+            else:
+                rail_widget.styles.width = 18
+            # Re-render rail items in compact/full mode
+            self._refresh_rail_labels()
 
     def _update_subtitle(self) -> None:
         short = self._cwd.replace(str(os.path.expanduser("~")), "~")
-        if self._all_projects:
-            self.app.sub_title = f"all projects  {_SORT_LABEL[self._sort]}"
+        scope = "all projects" if self._all_projects else short
+        if self._harness_filter:
+            h = HARNESS_MAP.get(self._harness_filter)
+            harness_part = f"  [{h.icon} {h.label}]" if h else f"  [{self._harness_filter}]"
         else:
-            self.app.sub_title = f"{short}  {_SORT_LABEL[self._sort]}"
+            harness_part = ""
+        self.app.sub_title = f"{scope}  {_SORT_LABEL[self._sort]}{harness_part}"
 
     def _status_label(self) -> str:
-        return "all projects" if self._all_projects else self._cwd.replace(str(os.path.expanduser("~")), "~")
+        scope = "all projects" if self._all_projects else self._cwd.replace(str(os.path.expanduser("~")), "~")
+        if self._harness_filter:
+            h = HARNESS_MAP.get(self._harness_filter)
+            label = h.label if h else self._harness_filter
+            return f"{label} · {scope}"
+        return scope
 
     def _update_status(self) -> None:
         filter_value = self.query_one("#filter", FilterInput).value.strip()
@@ -1061,13 +1239,52 @@ class BrowseScreen(Screen[None]):
                 sort_label=_SORT_LABEL[self._sort],
                 filter_label=filter_value or "—",
                 count=len(self._filtered),
-                mode_label="cmd+k palette",
-                command_hint="enter=resume • /=filter",
+                command_hint=self._HINTS[self._hint_idx],
             )
         )
 
+    def _populate_rail(self) -> None:
+        rail = self.query_one("#harness-rail", ListView)
+        rail.clear()
+        rail.append(HarnessRailItem(HarnessRailItem.HARNESS_ALL, "▦", "All", ""))
+        for h in HARNESSES:
+            rail.append(HarnessRailItem(h.id, h.icon, h.label, h.color))
+        self._sync_rail_highlight()
+
+    def _sync_rail_highlight(self) -> None:
+        rail = self.query_one("#harness-rail", ListView)
+        target = self._harness_filter or HarnessRailItem.HARNESS_ALL
+        for i, item in enumerate(rail.children):
+            if isinstance(item, HarnessRailItem) and item.harness_id == target:
+                rail.index = i
+                break
+
+    def _update_rail_counts(self) -> None:
+        counts: dict[str, int] = {}
+        for s in self._all_sessions:
+            counts[s.source] = counts.get(s.source, 0) + 1
+        total = len(self._all_sessions)
+        rail = self.query_one("#harness-rail", ListView)
+        for item in rail.children:
+            if isinstance(item, HarnessRailItem):
+                if item.harness_id == HarnessRailItem.HARNESS_ALL:
+                    item.set_count(total, compact=self._rail_collapsed)
+                else:
+                    item.set_count(counts.get(item.harness_id, 0), compact=self._rail_collapsed)
+
+    def _refresh_rail_labels(self) -> None:
+        rail = self.query_one("#harness-rail", ListView)
+        for item in rail.children:
+            if isinstance(item, HarnessRailItem):
+                item.refresh_label(compact=self._rail_collapsed)
+
     def _load(self) -> None:
-        self._sessions = list_sessions(cwd=self._cwd, all_projects=self._all_projects)
+        self._all_sessions = list_sessions(cwd=self._cwd, all_projects=self._all_projects)
+        if self._harness_filter:
+            self._sessions = [s for s in self._all_sessions if s.source == self._harness_filter]
+        else:
+            self._sessions = list(self._all_sessions)
+        self._update_rail_counts()
         fi = self.query_one("#filter", FilterInput)
         self._apply_filter(fi.value)
         self._update_status()
@@ -1101,8 +1318,16 @@ class BrowseScreen(Screen[None]):
         if self._filtered:
             self._load_preview(self._filtered[0].sid)
         else:
-            self.query_one("#preview", Static).update("*No sessions found.*")
+            self.query_one("#preview", Static).update(self._empty_state_msg())
         self._update_status()
+
+    def _empty_state_msg(self) -> str:
+        if self._harness_filter:
+            h = HARNESS_MAP.get(self._harness_filter)
+            label = f"{h.icon} {h.label}" if h else self._harness_filter
+            return f"*No {label} sessions found.*\n\nStart a new session or switch harness in the rail."
+        scope = "this project" if not self._all_projects else "any project"
+        return f"*No sessions found in {scope}.*\n\nUse a to change scope."
 
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
@@ -1170,11 +1395,23 @@ class BrowseScreen(Screen[None]):
         if isinstance(event.item, SessionItem):
             self.app.push_screen(SessionPreviewScreen(event.item.session))
 
+    @on(ListView.Selected, "#harness-rail")
+    def _harness_rail_selected(self, event: ListView.Selected) -> None:
+        if isinstance(event.item, HarnessRailItem):
+            hid = event.item.harness_id
+            self._harness_filter = hid if hid else None
+            self._load()
+            self._update_subtitle()
+            self._sync_rail_highlight()
+            self.query_one("#sessions", ListView).focus()
+
     # ── actions ───────────────────────────────────────────────────────────────
 
     def action_trash_session(self) -> None:
         s = self._current_session()
         if not s:
+            return
+        if not _guard_trashable_session(self, s):
             return
         lv = self.query_one("#sessions", ListView)
         idx = lv.index or 0
@@ -1208,11 +1445,8 @@ class BrowseScreen(Screen[None]):
         self.app.push_screen(TrashScreen(cwd=self._cwd))
 
     def action_toggle_all(self) -> None:
-        """Open directory picker (or switch back to all projects)."""
-        if not self._all_projects:
-            self.app.switch_screen(BrowseScreen(all_projects=True, cwd=self._cwd))
-        else:
-            self.app.push_screen(DirectoryPickerScreen(cwd=self._cwd))
+        """Open the scope picker. Escape in the picker returns to all projects."""
+        self.app.push_screen(DirectoryPickerScreen(cwd=self._cwd))
 
     def action_cycle_sort(self) -> None:
         idx = _SORT_CYCLE.index(self._sort)
@@ -1223,32 +1457,73 @@ class BrowseScreen(Screen[None]):
         self.notify(f"Sort: {_SORT_LABEL[self._sort]}", timeout=1)
 
     def action_content_search(self) -> None:
-        def on_query(query: Optional[str]) -> None:
-            if query:
-                self.app.push_screen(
-                    ContentSearchScreen(
-                        query=query,
-                        all_projects=self._all_projects,
-                        cwd=self._cwd,
-                    )
-                )
+        self.app.push_screen(
+            ContentSearchScreen(
+                all_projects=self._all_projects,
+                cwd=self._cwd,
+            )
+        )
 
-        self.app.push_screen(InputDialog("Search session content (ripgrep):"), on_query)
+    def _session_menu_options(self, session: Session) -> list[tuple[str, str]]:
+        options = [
+            ("Resume", "resume"),
+            ("Rename", "rename"),
+        ]
+        if _session_supports_trash(session):
+            options.append(("Trash", "trash"))
+        return options
+
+    def _show_session_menu(self, session: Session, x: int | None = None, y: int | None = None) -> None:
+        self._ctx_session = session
+        if x is None or y is None:
+            lv = self.query_one("#sessions", ListView)
+            item = lv.highlighted_child
+            if isinstance(item, SessionItem):
+                x = item.region.x + min(4, max(0, item.region.width - 1))
+                y = item.region.y + 1
+            else:
+                x = self.app.size.width // 2 - 10
+                y = self.app.size.height // 2 - 2
+        self.query_one(ContextMenuWidget).show(
+            self._session_menu_options(session),
+            x,
+            y,
+        )
+
+    def action_open_session_menu(self) -> None:
+        session = self._current_session()
+        if not session:
+            return
+        self._show_session_menu(session)
 
     def action_open_palette(self) -> None:
+        # Core commands
         commands = [
-            CommandSpec("resume", "Resume session", keywords=("open", "launch"), context=("preview",)),
+            CommandSpec("resume", "Resume session", keywords=("open", "launch")),
             CommandSpec("rename", "Rename session", keywords=("label", "name")),
             CommandSpec("trash", "Trash session", keywords=("delete", "remove")),
-            CommandSpec("search", "Search session content", keywords=("rg", "ripgrep")),
-            CommandSpec("new_search", "Jump to search box", keywords=("search", "query")),
-            CommandSpec("filter", "Filter current list", keywords=("browse", "query")),
-            CommandSpec("scope", "Change scope", keywords=("all projects", "directory")),
+            CommandSpec("filter", "Filter current list", keywords=("find", "query")),
+            CommandSpec("scope", "Change directory scope", keywords=("all projects", "dir")),
             CommandSpec("sort", "Cycle sort order", keywords=("recent", "oldest", "folder")),
             CommandSpec("trashbin", "Open trash bin", keywords=("restore", "recovery")),
-            CommandSpec("new", "Start new session", keywords=("fresh", "create")),
             CommandSpec("quit", "Quit app", keywords=("exit",)),
         ]
+        # Harness filter commands — show only present harnesses
+        harness_counts: dict[str, int] = {}
+        for s in self._all_sessions:
+            harness_counts[s.source] = harness_counts.get(s.source, 0) + 1
+        if self._harness_filter:
+            commands.append(CommandSpec(
+                "harness_all", "Show all harnesses",
+                keywords=("all", "reset", "filter"),
+            ))
+        for h in HARNESSES:
+            cnt = harness_counts.get(h.id, 0)
+            if cnt:
+                commands.append(CommandSpec(
+                    f"harness_{h.id}", f"{h.icon} Show only {h.label}  ({cnt})",
+                    keywords=("filter", "show", h.label.lower(), h.id),
+                ))
 
         def dispatch(key: str) -> None:
             if key == "resume":
@@ -1259,10 +1534,6 @@ class BrowseScreen(Screen[None]):
                 self.action_rename_session()
             elif key == "trash":
                 self.action_trash_session()
-            elif key == "search":
-                self.action_content_search()
-            elif key == "new_search":
-                self.action_start_filter()
             elif key == "filter":
                 self.action_start_filter()
             elif key == "scope":
@@ -1271,55 +1542,22 @@ class BrowseScreen(Screen[None]):
                 self.action_cycle_sort()
             elif key == "trashbin":
                 self.action_open_trash()
-            elif key == "new":
-                self.action_new_session()
             elif key == "quit":
                 self.action_quit_app()
+            elif key == "harness_all":
+                self._harness_filter = None
+                self._load()
+                self._update_subtitle()
+                self._sync_rail_highlight()
+            elif key.startswith("harness_"):
+                hid = key[len("harness_"):]
+                self._harness_filter = hid
+                self._load()
+                self._update_subtitle()
+                self._sync_rail_highlight()
 
-        run_command_palette(self.app, "Command palette", commands, dispatch, hint="Enter runs • Esc closes • use arrows or type")
-
-    def action_new_session(self) -> None:
-        self.app.exit(("new",))
-
-    def action_open_palette(self) -> None:
-        commands = [
-            CommandSpec("resume", "Resume session", keywords=("open", "launch"), context=("preview",)),
-            CommandSpec("rename", "Rename session", keywords=("label", "name")),
-            CommandSpec("trash", "Trash session", keywords=("delete", "remove")),
-            CommandSpec("search", "Search session content", keywords=("rg", "ripgrep")),
-            CommandSpec("filter", "Filter current list", keywords=("browse", "query")),
-            CommandSpec("scope", "Change scope", keywords=("all projects", "directory")),
-            CommandSpec("sort", "Cycle sort order", keywords=("recent", "oldest", "folder")),
-            CommandSpec("trashbin", "Open trash bin", keywords=("restore", "recovery")),
-            CommandSpec("new", "Start new session", keywords=("fresh", "create")),
-            CommandSpec("quit", "Quit app", keywords=("exit",)),
-        ]
-
-        def dispatch(key: str) -> None:
-            if key == "resume":
-                s = self._current_session()
-                if s:
-                    self.app.push_screen(SessionPreviewScreen(s))
-            elif key == "rename":
-                self.action_rename_session()
-            elif key == "trash":
-                self.action_trash_session()
-            elif key == "search":
-                self.action_content_search()
-            elif key == "filter":
-                self.action_start_filter()
-            elif key == "scope":
-                self.action_toggle_all()
-            elif key == "sort":
-                self.action_cycle_sort()
-            elif key == "trashbin":
-                self.action_open_trash()
-            elif key == "new":
-                self.action_new_session()
-            elif key == "quit":
-                self.action_quit_app()
-
-        run_command_palette(self.app, "Command palette", commands, dispatch, hint="Enter runs • Esc closes • use arrows or type")
+        run_command_palette(self.app, "Command palette", commands, dispatch,
+                            hint="Enter runs • Esc closes • type to filter")
 
     def action_quit_app(self) -> None:
         self.app.exit(None)
@@ -1328,17 +1566,7 @@ class BrowseScreen(Screen[None]):
 
     @on(SessionItem.RightClicked)
     def _session_right_clicked(self, event: SessionItem.RightClicked) -> None:
-        self._ctx_session = event.session
-        self.query_one(ContextMenuWidget).show(
-            [
-                ("Resume", "resume"),
-                ("Rename", "rename"),
-                ("Trash", "trash"),
-                ("New session", "new"),
-            ],
-            event.x,
-            event.y,
-        )
+        self._show_session_menu(event.session, event.x, event.y)
 
     @on(ContextMenuWidget.Chosen)
     def _ctx_chosen(self, event: ContextMenuWidget.Chosen) -> None:
@@ -1359,6 +1587,8 @@ class BrowseScreen(Screen[None]):
 
             self.app.push_screen(InputDialog("New name:", initial=s.name), on_rename)
         elif event.value == "trash":
+            if not _guard_trashable_session(self, s):
+                return
             lv = self.query_one("#sessions", ListView)
             idx = lv.index or 0
             try:
@@ -1371,8 +1601,6 @@ class BrowseScreen(Screen[None]):
             if self._filtered:
                 lv.index = min(idx, len(self._filtered) - 1)
             self.notify("Trashed.", timeout=1)
-        elif event.value == "new":
-            self.app.exit(("new",))
 
 
 # ── Content search screen ─────────────────────────────────────────────────────
@@ -1380,14 +1608,19 @@ class BrowseScreen(Screen[None]):
 
 class ContentSearchScreen(Screen[None]):
     BINDINGS = [
-        Binding("ctrl+d", "trash_session", "Trash", show=True),
-        Binding("ctrl+underscore", "new_search", "Search", show=True),
+        Binding("d", "trash_session", "Trash", show=True),
+        Binding("ctrl+d", "trash_session", "Trash", show=False),
+        Binding("s", "new_search", "Edit query", show=True),
+        Binding("ctrl+underscore", "new_search", "Search", show=False),
         Binding("ctrl+slash", "new_search", "Search", show=False),
+        Binding("r", "toggle_regex", "Regex", show=True),
         Binding("ctrl+g", "toggle_regex", "Regex", show=False),
+        Binding("c", "toggle_case_mode", "Case mode", show=True),
         Binding("ctrl+i", "toggle_case_mode", "Case mode", show=False),
-        Binding("alt+r", "toggle_regex", "Regex", show=True),
-        Binding("alt+c", "toggle_case_mode", "Case mode", show=True),
-        Binding("ctrl+b", "back", "Back", show=True),
+        Binding("alt+r", "toggle_regex", "Regex", show=False),
+        Binding("alt+c", "toggle_case_mode", "Case mode", show=False),
+        Binding("b", "back", "Back", show=True),
+        Binding("ctrl+b", "back", "Back", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("escape", "back", "Back", show=False),
     ]
@@ -1439,13 +1672,32 @@ class ContentSearchScreen(Screen[None]):
         regex = "regex" if self._regex_mode else "literal"
         return f"{regex} • case:{self._case_mode}"
 
+    def _scope_label(self) -> str:
+        if self._all_projects:
+            return "all projects"
+        return self._cwd.replace(str(os.path.expanduser("~")), "~")
+
+    def _update_status(self) -> None:
+        query = self.query_one("#search", FilterInput).value.strip()
+        self.query_one("#status-strip", Label).update(
+            status_strip_text(
+                screen_label="search",
+                scope_label=self._scope_label(),
+                filter_label=query,
+                count=len(self._sessions),
+                mode_label=self._search_mode_label(),
+                command_hint="enter=search  s=edit-query  d=trash  r=regex  c=case  b=back",
+            )
+        )
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield Label("", id="status-strip")
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield FilterInput(
                     value=self._query,
-                    placeholder="rg query — Enter search • Ctrl+G/Alt+R regex • Ctrl+I/Alt+C case",
+                    placeholder="Type a query, then Enter to search. From results: s edits, d trashes.",
                     id="search",
                 )
                 yield ListView(id="sessions")
@@ -1459,6 +1711,8 @@ class ContentSearchScreen(Screen[None]):
         self.app.sub_title = f"search: {self._query}"
         if self._query:
             self._run_search(self._query)
+        else:
+            self._update_status()
         self.query_one("#search", FilterInput).focus()
 
     def _run_search(self, query: str) -> None:
@@ -1479,6 +1733,7 @@ class ContentSearchScreen(Screen[None]):
         else:
             self.query_one("#preview", Static).update(f"*No results for: {query}*")
         self.app.sub_title = f"search: {query}  ({self._search_mode_label()})"
+        self._update_status()
 
     def _current_session(self) -> Optional[Session]:
         item = self.query_one("#sessions", ListView).highlighted_child
@@ -1541,6 +1796,8 @@ class ContentSearchScreen(Screen[None]):
         s = self._current_session()
         if not s:
             return
+        if not _guard_trashable_session(self, s):
+            return
         lv = self.query_one("#sessions", ListView)
         idx = lv.index or 0
         try:
@@ -1555,7 +1812,9 @@ class ContentSearchScreen(Screen[None]):
         self.notify("Trashed.", timeout=1)
 
     def action_new_search(self) -> None:
-        self.query_one("#search", FilterInput).focus()
+        search = self.query_one("#search", FilterInput)
+        search.focus()
+        search.cursor_position = len(search.value)
 
     def action_toggle_regex(self) -> None:
         self._regex_mode = not self._regex_mode
@@ -1564,6 +1823,8 @@ class ContentSearchScreen(Screen[None]):
         q = self.query_one("#search", FilterInput).value.strip()
         if q:
             self._run_search(q)
+        else:
+            self._update_status()
 
     def action_toggle_case_mode(self) -> None:
         self._case_mode_idx = (self._case_mode_idx + 1) % len(self._case_modes)
@@ -1571,6 +1832,8 @@ class ContentSearchScreen(Screen[None]):
         q = self.query_one("#search", FilterInput).value.strip()
         if q:
             self._run_search(q)
+        else:
+            self._update_status()
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -1581,11 +1844,10 @@ class ContentSearchScreen(Screen[None]):
     @on(SessionItem.RightClicked)
     def _session_right_clicked(self, event: SessionItem.RightClicked) -> None:
         self._ctx_session = event.session
-        self.query_one(ContextMenuWidget).show(
-            [("Resume", "resume"), ("Trash", "trash")],
-            event.x,
-            event.y,
-        )
+        options = [("Resume", "resume")]
+        if _session_supports_trash(event.session):
+            options.append(("Trash", "trash"))
+        self.query_one(ContextMenuWidget).show(options, event.x, event.y)
 
     @on(ContextMenuWidget.Chosen)
     def _ctx_chosen(self, event: ContextMenuWidget.Chosen) -> None:
@@ -1595,6 +1857,8 @@ class ContentSearchScreen(Screen[None]):
         if event.value == "resume":
             self.app.push_screen(SessionPreviewScreen(s, search_term=self._query))
         elif event.value == "trash":
+            if not _guard_trashable_session(self, s):
+                return
             lv = self.query_one("#sessions", ListView)
             idx = lv.index or 0
             try:
@@ -1614,11 +1878,17 @@ class ContentSearchScreen(Screen[None]):
 
 class TrashScreen(Screen[None]):
     BINDINGS = [
-        Binding("ctrl+d", "delete_forever", "Delete forever", show=True),
-        Binding("ctrl+e", "empty_all", "Empty trash", show=True),
-        Binding("ctrl+b", "back", "Back", show=True),
+        Binding("d", "delete_forever", "Delete forever", show=True),
+        Binding("ctrl+d", "delete_forever", "Delete forever", show=False),
+        Binding("e", "empty_all", "Empty trash", show=True),
+        Binding("ctrl+e", "empty_all", "Empty trash", show=False),
+        Binding("r", "restore_session", "Restore", show=True),
+        Binding("ctrl+r", "restore_session", "Restore", show=False),
+        Binding("b", "back", "Back", show=True),
+        Binding("ctrl+b", "back", "Back", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("escape", "back", "Back", show=False),
+        Binding("/", "start_filter", "Filter", show=True),
     ]
 
     DEFAULT_CSS = (
@@ -1627,21 +1897,38 @@ class TrashScreen(Screen[None]):
     TrashScreen {
         layers: base backdrop overlay;
     }
+    #filter-bar {
+        height: 3;
+        border-top: solid $panel-darken-1;
+        display: none;
+    }
+    #filter-label {
+        width: 3;
+        height: 3;
+        content-align: center middle;
+        color: $text-muted;
+        background: $panel;
+    }
     """
     )
 
     def __init__(self, cwd: Optional[str] = None) -> None:
         super().__init__()
         self._cwd = cwd or os.getcwd()
+        self._all_entries: list[TrashEntry] = []
         self._entries: list[TrashEntry] = []
         self._preview_timer: Optional[Timer] = None
         self._ctx_entry: Optional[TrashEntry] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
+        yield Label("", id="status-strip")
         with Horizontal(id="main"):
             with Vertical(id="left"):
                 yield ListView(id="sessions")
+                with Horizontal(id="filter-bar"):
+                    yield Label("/", id="filter-label")
+                    yield FilterInput(placeholder="filter trash…", id="filter")
             with VerticalScroll(id="preview-scroll"):
                 yield Static("", id="preview")
         yield Footer()
@@ -1653,20 +1940,71 @@ class TrashScreen(Screen[None]):
         self._load()
         self.query_one("#sessions", ListView).focus()
 
+    def _update_status(self) -> None:
+        filter_value = self.query_one("#filter", FilterInput).value.strip()
+        self.query_one("#status-strip", Label).update(
+            status_strip_text(
+                screen_label="trash",
+                filter_label=filter_value,
+                count=len(self._entries),
+                command_hint="enter/r=restore  d=delete  e=empty  b=back",
+            )
+        )
+
     def _load(self) -> None:
-        self._entries = list_trash()
+        self._all_entries = list_trash()
+        self._apply_filter(self.query_one("#filter", FilterInput).value)
+
+    def _apply_filter(self, query: str) -> None:
+        q = query.lower().strip()
+        if q:
+            self._entries = [
+                entry
+                for entry in self._all_entries
+                if q in f"{entry.name or ''} {entry.sid}".lower()
+            ]
+        else:
+            self._entries = list(self._all_entries)
+
         lv = self.query_one("#sessions", ListView)
         lv.clear()
-        for e in self._entries:
-            lv.append(TrashItem(e))
+        for entry in self._entries:
+            lv.append(TrashItem(entry))
         if self._entries:
             self._load_preview(self._entries[0].sid)
         else:
             self.query_one("#preview", Static).update("*Trash is empty.*")
+        self._update_status()
 
     def _current_entry(self) -> Optional[TrashEntry]:
         item = self.query_one("#sessions", ListView).highlighted_child
         return item.entry if isinstance(item, TrashItem) else None
+
+    def action_start_filter(self) -> None:
+        bar = self.query_one("#filter-bar")
+        bar.display = True
+        self.query_one("#filter", FilterInput).focus()
+
+    @on(FilterInput.Cancelled)
+    def _filter_cancelled(self) -> None:
+        self._hide_filter()
+
+    def _hide_filter(self) -> None:
+        fi = self.query_one("#filter", FilterInput)
+        fi.value = ""
+        self._apply_filter("")
+        self.query_one("#filter-bar").display = False
+        self.query_one("#sessions", ListView).focus()
+
+    def move_list(self, direction: int) -> None:
+        lv = self.query_one("#sessions", ListView)
+        lv.action_cursor_down() if direction > 0 else lv.action_cursor_up()
+
+    def activate_list(self) -> None:
+        entry = self._current_entry()
+        self._hide_filter()
+        if entry:
+            self._do_restore(entry)
 
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
@@ -1690,6 +2028,10 @@ class TrashScreen(Screen[None]):
     def _entry_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, TrashItem):
             self._do_restore(event.item.entry)
+
+    @on(Input.Changed, "#filter")
+    def _filter_changed(self, event: Input.Changed) -> None:
+        self._apply_filter(event.value)
 
     def _do_restore(self, entry: TrashEntry) -> None:
         lv = self.query_one("#sessions", ListView)
@@ -1724,6 +2066,11 @@ class TrashScreen(Screen[None]):
         e = self._current_entry()
         if e:
             self._do_delete(e)
+
+    def action_restore_session(self) -> None:
+        entry = self._current_entry()
+        if entry:
+            self._do_restore(entry)
 
     def action_empty_all(self) -> None:
         if not self._entries:

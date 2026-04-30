@@ -89,8 +89,19 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
             print("Error: missing session id for resume action", file=sys.stderr)
             sys.exit(1)
         sid = result[1]
-        claude = os.environ.get("CLAUDE_CMD", "claude")
-        os.execvp(claude, [claude, "--resume", sid])
+        source = result[2] if len(result) >= 3 else "claude"
+        from .backend import HARNESS_MAP, SOURCE_CLAUDE
+        h = HARNESS_MAP.get(source)
+        if h:
+            cmd = h.build_resume_cmd(sid)
+            # Allow CLAUDE_CMD override for Claude Code only
+            if source == SOURCE_CLAUDE:
+                cmd[0] = os.environ.get("CLAUDE_CMD", cmd[0])
+        else:
+            # Fallback: legacy behaviour
+            claude = os.environ.get("CLAUDE_CMD", "claude")
+            cmd = [claude, "--resume", sid]
+        os.execvp(cmd[0], cmd)
     elif action == "new":
         claude = os.environ.get("CLAUDE_CMD", "claude")
         os.execvp(claude, [claude])
@@ -167,25 +178,22 @@ cc — Claude Code session manager (claudetree)
   cc help         This help
 
 Keybindings (in picker):
-  enter      Resume session       ctrl-d  Trash session
-  ctrl-r     Rename session       ctrl-t  Open trash bin
-  ctrl-a     Toggle all projects  ctrl-n  New session
-  ctrl-/     Search session content (ripgrep)
-  ctrl-b     Back (in search/trash views)
+  enter      Resume session       d       Trash session
+  r          Rename session       t       Open trash bin
+  a          Scope picker         o       Cycle sort
+  s          Search content       p       Session menu
+  /          Filter current list  q       Quit
 
 Preview find mode:
-  ctrl-f     Focus find box (supports regex)
-  ctrl-i     Cycle case mode (smart/ignore/match)
-  ctrl-g     Toggle regex/literal mode
-  alt-c      Cycle case mode (fallback)
-  alt-r      Toggle regex/literal mode (fallback)
+  f          Focus find box (supports regex)
+  c          Cycle case mode (smart/ignore/match)
+  r          Toggle regex/literal mode
   n / N      Next / previous match
 
-Search mode (ctrl-/):
-  ctrl-i     Cycle case mode (smart/ignore/match)
-  ctrl-g     Toggle regex/literal mode
-  alt-c      Cycle case mode (fallback)
-  alt-r      Toggle regex/literal mode (fallback)
+Search screen:
+  enter      Run search           s       Edit query
+  d          Trash result         b       Back
+  r          Toggle regex         c       Cycle case mode
 """)
 
 

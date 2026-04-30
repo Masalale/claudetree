@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
 from rich.text import Text
 
-from .backend import Session, TrashEntry, pid_to_path
+from .backend import (
+    Session, TrashEntry, pid_to_path,
+    SOURCE_CLAUDE, SOURCE_HERMES, SOURCE_OPENCLAW, SOURCE_OPENCODE,
+    HARNESS_MAP,
+    _opencode_project_path,
+)
 
 
 @dataclass(frozen=True)
@@ -25,21 +31,56 @@ def _compact(text: str, limit: int = 72) -> str:
     return cleaned[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _project_label(project_id: str) -> str:
-    return pid_to_path(project_id) if project_id else "unknown project"
+def _project_label(session: Session) -> str:
+    if session.source == SOURCE_OPENCODE:
+        return _opencode_project_path(session.project_id)
+    if session.project_id:
+        return pid_to_path(session.project_id)
+    return "unknown project"
+
+
+def harness_pill(source: str) -> Text:
+    """Return a styled inline badge for the harness, e.g. '★ Claude Code'."""
+    h = HARNESS_MAP.get(source)
+    if not h:
+        return Text(f"[{source}]", style="dim")
+    pill = Text()
+    pill.append(f"{h.icon} {h.label}", style=h.color)
+    return pill
 
 
 def _session_primary_label(session: Session) -> str:
     return session.name or session.first_msg or session.sid[:24]
 
 
+_ACTIVE_SECS = 300    # 5 min — session counts as "active"
+_HEAVY_MSGS  = 200    # msg count threshold for "heavy" badge
+
+
+def _session_badges(session: Session) -> Text:
+    """Return inline badge glyphs: active indicator and/or heavy marker."""
+    badges = Text()
+    if session.mtime_secs and (time.time() - session.mtime_secs) < _ACTIVE_SECS:
+        badges.append(" ●", style="bold green")
+    if session.msgs >= _HEAVY_MSGS:
+        badges.append(" ↟", style="bold yellow")
+    return badges
+
+
 def session_row_text(session: Session, show_project: bool = True) -> Text:
+    h = HARNESS_MAP.get(session.source)
+    label_style = f"bold {h.color}" if h else "bold cyan"
+
     text = Text()
     text.append(f"{session.age:>4}  ", style="dim")
-    text.append(_session_primary_label(session), style="bold cyan")
+    text.append(_session_primary_label(session), style=label_style)
+    text.append_text(_session_badges(session))
     text.append(f"  {session.msgs} msgs", style="dim")
+    if session.source != SOURCE_CLAUDE:
+        text.append("  ")
+        text.append_text(harness_pill(session.source))
     if show_project and session.project_id:
-        text.append(f"  {_project_label(session.project_id)}", style="magenta")
+        text.append(f"  {_project_label(session)}", style="magenta")
     if session.first_msg:
         snippet = _compact(session.first_msg, 88)
         text.append("\n")
@@ -52,15 +93,15 @@ def trash_row_text(entry: TrashEntry) -> Text:
     text.append(f"{entry.when:>8}  ", style="dim")
     label = entry.name or entry.sid[:24]
     text.append(label, style="bold red")
-    text.append(f"  {_project_label(entry.project_id)}", style="dim")
+    text.append(f"  {entry.project_path if entry.project_id else 'unknown project'}", style="dim")
     return text
 
 
 def status_strip_text(
     *,
     screen_label: str,
-    scope_label: str,
-    sort_label: str,
+    scope_label: str = "",
+    sort_label: str = "",
     filter_label: str = "",
     count: int | None = None,
     mode_label: str = "",
@@ -68,10 +109,12 @@ def status_strip_text(
 ) -> Text:
     text = Text()
     text.append(f"{screen_label}", style="bold")
-    text.append(" · ", style="dim")
-    text.append(f"scope {scope_label}", style="cyan")
-    text.append(" · ", style="dim")
-    text.append(f"sort {sort_label}", style="magenta")
+    if scope_label:
+        text.append(" · ", style="dim")
+        text.append(f"scope {scope_label}", style="cyan")
+    if sort_label:
+        text.append(" · ", style="dim")
+        text.append(f"sort {sort_label}", style="magenta")
     if filter_label:
         text.append(" · ", style="dim")
         text.append(f"filter {filter_label}", style="green")

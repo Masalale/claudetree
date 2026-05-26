@@ -76,15 +76,15 @@ cd ~/claudetree && ./uninstall.sh --yes
 ## Usage
 
 ```bash
-cc                  # open the session browser
-cc ls               # same as cc
-cc list             # same as cc
-cc rm [sid]         # trash a session by ID, or open trash browser
-cc delete [sid]     # alias for rm
-cc trash [sid]      # alias for rm
-cc restore [sid]    # restore a session, or open the trash browser
-cc empty            # permanently empty trash (asks for confirmation)
-cc help             # show help
+claudetree                  # open the session browser
+claudetree ls               # same as above
+claudetree list             # same as above
+claudetree rm [sid]         # trash a session by ID, or open trash browser
+claudetree delete [sid]     # alias for rm
+claudetree trash [sid]      # alias for rm
+claudetree restore [sid]    # restore a session, or open the trash browser
+claudetree empty            # permanently empty trash (asks for confirmation)
+claudetree help             # show help
 ```
 
 ## Configuration
@@ -94,7 +94,7 @@ cc help             # show help
 | `CLAUDE_CMD` | `claude` | Claude binary used for resume and new-session handoff |
 
 > [!TIP]
-> Set `CLAUDE_CMD` if your Claude binary lives somewhere else, for example `CLAUDE_CMD=/usr/local/bin/claude cc`.
+> Set `CLAUDE_CMD` if your Claude binary lives somewhere else, for example `CLAUDE_CMD=/usr/local/bin/claude claudetree`.
 
 ## Keybindings
 
@@ -158,7 +158,7 @@ claudetree reads Claude Code session files directly from disk:
 
 Project IDs are encoded paths: `-home-you-app` maps back to `/home/you/app`.
 
-When you resume a session, claudetree exits cleanly and execs into `claude --resume <sid>`.
+When you resume a session, claudetree switches to the session's project directory, then execs into `claude --resume <sid>` to ensure Claude can find the session.
 
 ## Tech stack
 
@@ -170,6 +170,6 @@ When you resume a session, claudetree exits cleanly and execs into `claude --res
 ## Build
 
 ```bash
-make install    # install to ~/.local/bin/cc
-make uninstall  # remove from ~/.local/bin/cc
+make install    # install to ~/.local/bin/claudetree
+make uninstall  # remove from ~/.local/bin/claudetree
 ```

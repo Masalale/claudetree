@@ -68,7 +68,7 @@ def main() -> None:
         _print_help()
 
     else:
-        print(f"Unknown command: {cmd!r}  (try 'cc help')", file=sys.stderr)
+        print(f"Unknown command: {cmd!r}  (try 'claudetree help')", file=sys.stderr)
         sys.exit(1)
 
 
@@ -90,7 +90,7 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
             sys.exit(1)
         sid = result[1]
         source = result[2] if len(result) >= 3 else "claude"
-        from .backend import HARNESS_MAP, SOURCE_CLAUDE
+        from .backend import HARNESS_MAP, SOURCE_CLAUDE, project_for_session, pid_to_path
         h = HARNESS_MAP.get(source)
         if h:
             cmd = h.build_resume_cmd(sid)
@@ -101,10 +101,32 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
             # Fallback: legacy behaviour
             claude = os.environ.get("CLAUDE_CMD", "claude")
             cmd = [claude, "--resume", sid]
+        _chdir_to_session_project(sid, source)
         os.execvp(cmd[0], cmd)
     elif action == "new":
         claude = os.environ.get("CLAUDE_CMD", "claude")
         os.execvp(claude, [claude])
+
+
+def _chdir_to_session_project(sid: str, source: str) -> None:
+    from .backend import (
+        project_for_session,
+        pid_to_path,
+        SOURCE_CLAUDE,
+        SOURCE_OPENCODE,
+    )
+    pid = project_for_session(sid)
+    if not pid:
+        return
+    if source == SOURCE_OPENCODE:
+        from .backend import _opencode_project_path
+        path = os.path.expanduser(_opencode_project_path(pid))
+    elif source == SOURCE_CLAUDE:
+        path = os.path.expanduser(pid_to_path(pid))
+    else:
+        return
+    if os.path.isdir(path):
+        os.chdir(path)
 
 
 def _run_internal(args: list[str]) -> None:
@@ -169,13 +191,13 @@ def _run_internal(args: list[str]) -> None:
 
 def _print_help() -> None:
     print("""\
-cc — Claude Code session manager (claudetree)
+claudetree — Claude Code session manager
 
-  cc              Browse and resume sessions
-  cc rm [id]      Trash a session (opens trash bin if no id)
-  cc restore [id] Restore from trash (opens trash bin if no id)
-  cc empty        Empty trash permanently
-  cc help         This help
+  claudetree              Browse and resume sessions
+  claudetree rm [id]      Trash a session (opens trash bin if no id)
+  claudetree restore [id] Restore from trash (opens trash bin if no id)
+  claudetree empty        Empty trash permanently
+  claudetree help         This help
 
 Keybindings (in picker):
   enter      Resume session       d       Trash session

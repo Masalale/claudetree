@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cc = "claudetree.__main__:main"
+claudetree = "claudetree.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

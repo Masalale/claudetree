@@ -15,7 +15,7 @@
 > [!WARNING]
 > This project is in early alpha. Expect bugs and breaking changes.
 
-Browse, search, rename, resume, and clean up sessions from **Claude Code, Opencode, GitHub Copilot CLI, PI, Hermes, Codex CLI, and T3 Code** — across every project on your machine, without leaving the terminal.
+Browse, search, rename, resume, and clean up sessions from **Claude Code, Opencode, GitHub Copilot CLI, PI, Hermes, and Codex CLI** — across every project on your machine, without leaving the terminal.
 
 ```
 claudetree
@@ -27,7 +27,6 @@ claudetree
 │ π PI       1d  C# drills   ~/excs   │  > what was I working on again?  │
 │ ⚡ Hermes   3d  docker dbg  ~/dock   │                                  │
 │ ◆ Codex    5d  adb bugfix  /mnt/c   │                                  │
-│ ▼ T3 Code 12d  hackathon   ~/hack   │                                  │
 └──────────┴──────────────────────────┴──────────────────────────────────┘
 ```
 
@@ -41,17 +40,16 @@ claudetree
 | π PI | `~/.pi/agent/sessions/` | `pi --session <sid>` | move file to `~/.claude/trash/` |
 | ⚡ Hermes | `~/.hermes/sessions/` | `hermes --resume <sid>` | move file to `~/.claude/trash/` |
 | ◆ Codex CLI | `~/.codex/state_*.sqlite` + rollout files | `codex resume <sid>` | Codex's own `archived` flag |
-| ▼ T3 Code | `~/.t3/userdata/state.sqlite` | launches the T3 Code app | T3's own `deleted_at` flag |
 
-**Full parity everywhere**: every harness supports list, preview, fuzzy filter, content search, rename, trash, restore, and delete-forever. Resume uses each harness's native command (claudetree `cd`s into the session's original project directory before exec-ing); T3 Code has no CLI, so resume launches the desktop app.
+**Full parity everywhere**: every harness supports list, preview, fuzzy filter, content search, rename, trash, restore, and delete-forever. Resume uses each harness's native command, and claudetree `cd`s into the session's original project directory before exec-ing.
 
 **Main sessions only** — subagent/sidechain sessions (Opencode Task children, Claude Code subagent transcripts) are hidden, matching each harness's own resume picker.
 
-**WSL aware** — on WSL, Windows-side stores under `/mnt/*/Users/*/` (`.claude`, `.codex`, `.t3`) are scanned too, with Windows paths translated to their WSL equivalents.
+**WSL aware** — on WSL, Windows-side stores under `/mnt/*/Users/*/` (`.claude`, `.codex`) are scanned too, with Windows paths translated to their WSL equivalents.
 
 ## Features
 
-- **Harness rail** — filter sessions by tool with a click, the palette, or keys `1`-`8` (instant, no rescan)
+- **Harness rail** — filter sessions by tool with a click, the palette, or keys `1`-`7` (instant, no rescan)
 - **Split-pane browser** — sessions on the left, live markdown preview on the right
 - **Fuzzy filter** — `/` filter does fzf-style subsequence matching (`dckr` finds `docker debugging`)
 - **Full-text search** — ripgrep-powered search inside session *content* across all harnesses (sqlite stores searched natively, Codex rollouts via ripgrep)
@@ -127,7 +125,7 @@ claudetree help             # show help
 |-----|--------|
 | `j` / `k` or `↑` / `↓` | Move through sessions |
 | `enter` | Open preview |
-| `1` - `8` | Harness filter (`1` = all, then rail order) |
+| `1` - `7` | Harness filter (`1` = all, then rail order) |
 | `/` | Filter sessions (fuzzy) |
 | `o` / `ctrl+s` | Cycle sort order |
 | `d` / `ctrl+d` | Trash session |
@@ -182,7 +180,6 @@ claudetree reads session data directly from each harness's local store:
 ~/.pi/agent/sessions/<encoded-cwd>/      # PI: .jsonl per session, grouped by project path
 ~/.hermes/sessions/                      # Hermes: .jsonl per session
 ~/.codex/state_*.sqlite                  # Codex CLI: thread index (messages in rollout .jsonl)
-~/.t3/userdata/state.sqlite              # T3 Code: threads + messages (opened read-only)
 
 ~/.claude/session-names/                 # claudetree: custom names (per project / harness)
 ~/.claude/trash/                         # claudetree: soft-deleted sessions + metadata
@@ -192,7 +189,7 @@ Project IDs are encoded paths: `-home-you-app` maps back to `/home/you/app` (PI 
 
 When you resume a session, claudetree switches to the session's project directory, then execs into the harness's native resume command so it can find the session.
 
-Copilot, Codex, and T3 Code sessions live in sqlite databases. Reads are always done through read-only connections; trash uses the safest write available per store: Codex's `archived` flag, T3's `deleted_at` column, and for Copilot a full row dump into `~/.claude/trash/<sid>.copilot.json` that restores byte-identically.
+Copilot and Codex sessions live in sqlite databases. Reads are always done through read-only connections; trash uses the safest write available per store: Codex's own `archived` flag, and for Copilot a full row dump into `~/.claude/trash/<sid>.copilot.json` that restores byte-identically.
 
 ## Tech stack
 

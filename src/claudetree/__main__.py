@@ -175,7 +175,7 @@ def _run_internal(args: list[str]) -> None:
 def _print_help() -> None:
     print("""\
 claudetree — AI coding session manager
-Harnesses: Claude Code, Opencode, Copilot, PI, Hermes, Codex, T3 Code
+Harnesses: Claude Code, Opencode, Copilot, PI, Hermes, Codex
 
   claudetree              Browse and resume sessions
   claudetree rm [id]      Trash a session (opens trash bin if no id)
@@ -189,7 +189,7 @@ Keybindings (in picker):
   a          Scope picker         o       Cycle sort
   s          Search content       p       Session menu
   /          Filter current list  q       Quit
-  1-8        Harness filter (1=all, then rail order)
+  1-7        Harness filter (1=all, then rail order)
 
 Preview find mode:
   f          Focus find box (supports regex)

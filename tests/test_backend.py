@@ -257,79 +257,6 @@ def test_opencode_subagent_sessions_hidden(tmp_path, monkeypatch):
     assert [s.sid for s in rows] == ["ses_parent"]
 
 
-def _make_t3_db(tmp_path: Path) -> None:
-    import sqlite3
-
-    db_dir = tmp_path / ".t3" / "userdata"
-    db_dir.mkdir(parents=True)
-    conn = sqlite3.connect(db_dir / "state.sqlite")
-    conn.executescript(
-        """
-        CREATE TABLE projection_threads (
-            thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
-            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-            deleted_at TEXT, archived_at TEXT
-        );
-        CREATE TABLE projection_thread_messages (
-            message_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT NOT NULL,
-            text TEXT NOT NULL, created_at TEXT NOT NULL
-        );
-        CREATE TABLE projection_projects (
-            project_id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace_root TEXT NOT NULL
-        );
-        INSERT INTO projection_projects VALUES ('p1', 'demo', '/home/user/demo');
-        INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at)
-        VALUES ('t3-thread-1', 'p1', 'Build the demo', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z');
-        INSERT INTO projection_thread_messages VALUES
-            ('m1', 't3-thread-1', 'user', 'make a demo app', '2026-06-01T00:00:00Z'),
-            ('m2', 't3-thread-1', 'assistant', 'Demo app created.', '2026-06-01T00:00:01Z');
-        INSERT INTO projection_threads (thread_id, project_id, title, created_at, updated_at, deleted_at)
-        VALUES ('t3-deleted', 'p1', 'Gone', '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', '2026-06-02T00:00:00Z');
-        INSERT INTO projection_thread_messages VALUES
-            ('m3', 't3-deleted', 'user', 'whatever', '2026-06-01T00:00:00Z');
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def test_t3_sessions_listed_previewed_trashed(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    _make_t3_db(tmp_path)
-
-    backend = _load_backend_with_home(tmp_path)
-    monkeypatch.setattr(backend, "_all_project_dirs", lambda: [backend.PROJECTS_DIR])
-    monkeypatch.setattr(backend, "_all_transcript_dirs", lambda: [backend.TRANSCRIPTS_DIR])
-
-    rows = [s for s in backend.list_sessions(all_projects=True) if s.source == "t3"]
-    assert [s.sid for s in rows] == ["t3-thread-1"]  # deleted thread hidden
-    assert rows[0].msgs == 2
-    assert rows[0].project_path == "/home/user/demo"
-
-    text = backend.preview_session("t3-thread-1")
-    assert "make a demo app" in text and "Demo app created." in text
-
-    assert backend._search_t3("demo APP", use_regex=False, case_mode="ignore") == ["t3-thread-1"]
-
-    codex = backend.HARNESS_MAP["codex"]
-    assert codex.build_resume_cmd("SID") == ["codex", "resume", "SID"]
-
-    # Trash uses T3's own deleted_at flag; pre-deleted thread already in trash
-    backend.trash_session("t3-thread-1")
-    assert [s.sid for s in backend.list_sessions(all_projects=True) if s.source == "t3"] == []
-    trash_sids = {e.sid for e in backend.list_trash()}
-    assert {"t3-thread-1", "t3-deleted"} <= trash_sids
-
-    # Restore brings it back to the live list
-    backend.restore_session("t3-thread-1")
-    assert [s.sid for s in backend.list_sessions(all_projects=True) if s.source == "t3"] == ["t3-thread-1"]
-
-    # Delete forever removes the rows entirely
-    backend.trash_session("t3-thread-1")
-    backend.delete_trashed("t3-thread-1")
-    assert backend._t3_thread_db("t3-thread-1") is None
-
-
 def _make_codex_db(tmp_path: Path) -> None:
     import sqlite3
 
@@ -402,15 +329,8 @@ def test_resume_command_resolver(tmp_path, monkeypatch):
 
     assert backend.resume_command("SID", "claude") == ["claude", "--resume", "SID"]
     assert backend.resume_command("SID", "copilot") == ["copilot", "--resume=SID"]
-
-    # T3 resolves to the desktop app when one is present
-    monkeypatch.setattr(backend.shutil, "which", lambda name: None)
-    downloads = tmp_path / "Downloads"
-    downloads.mkdir()
-    assert backend.resume_command("SID", "t3") is None
-    app_image = downloads / "T3-Code-1.0.0-x86_64.AppImage"
-    app_image.write_text("")
-    assert backend.resume_command("SID", "t3") == [str(app_image)]
+    assert backend.resume_command("SID", "codex") == ["codex", "resume", "SID"]
+    assert backend.resume_command("SID", "nonexistent-harness") is None
 
 
 def test_win_to_wsl_path(tmp_path, monkeypatch):

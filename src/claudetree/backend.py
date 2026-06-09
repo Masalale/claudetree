@@ -37,9 +37,6 @@ OPENCODE_STORAGE = HOME / ".local" / "share" / "opencode" / "storage"
 # Codex CLI
 CODEX_DIR = HOME / ".codex"
 
-# T3 Code (desktop app)
-T3_DIR = HOME / ".t3"
-
 # ── Source labels ──────────────────────────────────────────────────────────
 
 SOURCE_CLAUDE = "claude"
@@ -48,7 +45,6 @@ SOURCE_PI = "pi"
 SOURCE_COPILOT = "copilot"
 SOURCE_OPENCODE = "opencode"
 SOURCE_CODEX = "codex"
-SOURCE_T3 = "t3"
 
 
 # ── Harness registry ───────────────────────────────────────────────────────
@@ -78,7 +74,6 @@ HARNESSES: list[Harness] = [
     Harness(SOURCE_PI,       "PI",          "green",   "π", True, ("pi",       "--session", "{sid}")),
     Harness(SOURCE_HERMES,   "Hermes",      "magenta", "⚡", True, ("hermes",   "--resume",  "{sid}")),
     Harness(SOURCE_CODEX,    "Codex",       "white",   "◆", True, ("codex",    "resume",    "{sid}")),
-    Harness(SOURCE_T3,       "T3 Code",     "red",     "▼", True, ()),  # resumed by launching the T3 app
 ]
 
 HARNESS_MAP: dict[str, Harness] = {h.id: h for h in HARNESSES}
@@ -158,7 +153,7 @@ def _project_path_for(source: str, project_id: str) -> str:
         return _opencode_project_path(project_id)
     if source == SOURCE_PI:
         return pi_decode_pid(project_id)
-    if source in (SOURCE_COPILOT, SOURCE_CODEX, SOURCE_T3):
+    if source in (SOURCE_COPILOT, SOURCE_CODEX):
         # project_id is already an absolute path for sqlite-backed harnesses
         return project_id.replace(str(HOME), "~") if project_id else ""
     return pid_to_path(project_id)
@@ -333,8 +328,6 @@ def project_for_session(sid: str) -> Optional[str]:
         return _names_bucket_for_source(SOURCE_COPILOT, "")
     if _codex_thread_row(sid) is not None:
         return _names_bucket_for_source(SOURCE_CODEX, "")
-    if _t3_thread_db(sid) is not None:
-        return _names_bucket_for_source(SOURCE_T3, "")
     return None
 
 
@@ -349,9 +342,6 @@ def session_cwd(sid: str, source: str) -> Optional[str]:
     if source == SOURCE_CODEX:
         row = _codex_thread_row(sid)
         return _win_to_wsl_path(row[0]) if row and row[0] else None
-    if source == SOURCE_T3:
-        hit = _t3_thread_db(sid)
-        return _win_to_wsl_path(hit[1][1]) if hit and hit[1][1] else None
     f = _find_session_file(sid)
     if not f:
         return None
@@ -986,123 +976,6 @@ def _preview_codex(sid: str, row: tuple) -> str:
     return "\n".join(parts)
 
 
-# ── T3 Code (sqlite projections) ──────────────────────────────────────────
-
-def _t3_dbs() -> list[Path]:
-    dbs: list[Path] = []
-    for root in [T3_DIR, *_scan_mnt_dirs(".t3")]:
-        f = root / "userdata" / "state.sqlite"
-        if f.is_file():
-            dbs.append(f)
-    return dbs
-
-
-def _t3_thread_db(sid: str) -> Optional[tuple[Path, tuple]]:
-    """Return (db_path, (title, workspace_root)) for a T3 thread, or None."""
-    for db in _t3_dbs():
-        conn = _sqlite_ro(db)
-        if conn is None:
-            continue
-        try:
-            cur = conn.execute(
-                "SELECT t.title, COALESCE(p.workspace_root, '') "
-                "FROM projection_threads t "
-                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
-                "WHERE t.thread_id = ?",
-                (sid,),
-            )
-            row = cur.fetchone()
-            if row:
-                return db, row
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return None
-
-
-def _list_t3_sessions(names: dict[str, str]) -> list[Session]:
-    rows: list[Session] = []
-    seen: set[str] = set()
-    for db in _t3_dbs():
-        conn = _sqlite_ro(db)
-        if conn is None:
-            continue
-        try:
-            cur = conn.execute(
-                "SELECT t.thread_id, t.title, t.updated_at, "
-                "       COALESCE(p.workspace_root, ''), "
-                "       (SELECT count(*) FROM projection_thread_messages m "
-                "        WHERE m.thread_id = t.thread_id AND m.role IN ('user','assistant')), "
-                "       (SELECT m.text FROM projection_thread_messages m "
-                "        WHERE m.thread_id = t.thread_id AND m.role = 'user' "
-                "        ORDER BY m.created_at LIMIT 1) "
-                "FROM projection_threads t "
-                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
-                "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL"
-            )
-            for sid, title, updated_at, root, cnt, first in cur.fetchall():
-                if sid in seen or not cnt:
-                    continue
-                seen.add(sid)
-                rows.append(Session(
-                    sid=sid, name=names.get(sid, "") or (title or ""),
-                    first_msg=(first or "").strip().replace("\n", " ")[:60],
-                    age=_compute_age(updated_at) if updated_at else "?",
-                    msgs=cnt, project_id=_win_to_wsl_path(root or ""),
-                    sort_time=str(updated_at or ""), source=SOURCE_T3,
-                ))
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return rows
-
-
-def _preview_t3(sid: str, db: Path, row: tuple) -> str:
-    title, root = row
-    names = get_names("t3")
-    name = names.get(sid, "") or (title or "")
-    short_path = _win_to_wsl_path(root or "").replace(str(HOME), "~")
-
-    parts: list[str] = []
-    if name:
-        parts.append(f"## {name}")
-        parts.append(f"`{short_path}` [t3]")
-    else:
-        parts.append(f"## `{short_path}`")
-        parts.append("[t3]")
-
-    n = 0
-    conn = _sqlite_ro(db)
-    if conn is not None:
-        try:
-            cur = conn.execute(
-                "SELECT role, text FROM projection_thread_messages "
-                "WHERE thread_id = ? AND role IN ('user','assistant') "
-                "ORDER BY created_at",
-                (sid,),
-            )
-            for role, text in cur.fetchall():
-                text = (text or "").strip()
-                if not text:
-                    continue
-                n += 1
-                if role == "user":
-                    parts.append("**You**")
-                    parts.append(_quote(text[:500]))
-                else:
-                    parts.append("**Assistant**")
-                    parts.append(text[:2000])
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    if n == 0:
-        parts.append("*No usable chat messages found.*")
-    return "\n".join(parts)
-
-
 def _compile_search_pattern(query: str, use_regex: bool, case_mode: str):
     import re as _re
 
@@ -1205,97 +1078,7 @@ def _delete_codex_session(sid: str) -> None:
         return
 
 
-# ── T3 trash (uses T3's own deleted_at column) ────────────────────────────
-
-def _t3_set_deleted(sid: str, deleted: bool) -> bool:
-    ts = datetime.now(timezone.utc).isoformat() if deleted else None
-    hit = _t3_thread_db(sid)
-    if hit is None:
-        return False
-    db = hit[0]
-    try:
-        wconn = sqlite3.connect(db, timeout=5)
-        with wconn:
-            wconn.execute(
-                "UPDATE projection_threads SET deleted_at = ? WHERE thread_id = ?",
-                (ts, sid),
-            )
-        wconn.close()
-        return True
-    except sqlite3.Error:
-        return False
-
-
-def _t3_deleted_entries() -> list[TrashEntry]:
-    rows: list[TrashEntry] = []
-    for db in _t3_dbs():
-        conn = _sqlite_ro(db)
-        if conn is None:
-            continue
-        try:
-            cur = conn.execute(
-                "SELECT t.thread_id, t.title, t.deleted_at, COALESCE(p.workspace_root, '') "
-                "FROM projection_threads t "
-                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
-                "WHERE t.deleted_at IS NOT NULL"
-            )
-            for sid, title, deleted_at, root in cur.fetchall():
-                when = ""
-                try:
-                    dt = datetime.fromisoformat(str(deleted_at).replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.astimezone()
-                    d = datetime.now(timezone.utc) - dt
-                    when = f"{d.days}d ago" if d.days else f"{d.seconds // 3600}h ago"
-                except Exception:
-                    pass
-                rows.append(TrashEntry(
-                    sid=sid, name=title or "", project_id=_win_to_wsl_path(root or ""),
-                    when=when, source=SOURCE_T3,
-                ))
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return rows
-
-
-def _delete_t3_session(sid: str) -> None:
-    hit = _t3_thread_db(sid)
-    if hit is None:
-        return
-    try:
-        wconn = sqlite3.connect(hit[0], timeout=5)
-        with wconn:
-            wconn.execute(
-                "DELETE FROM projection_thread_messages WHERE thread_id = ?", (sid,)
-            )
-            wconn.execute(
-                "DELETE FROM projection_threads WHERE thread_id = ?", (sid,)
-            )
-        wconn.close()
-    except sqlite3.Error:
-        pass
-
-
 # ── Resume command resolution ─────────────────────────────────────────────
-
-def t3_app_command() -> Optional[list[str]]:
-    """Find the T3 Code desktop app (CLI shim or AppImage)."""
-    for name in ("t3-code", "t3code", "t3"):
-        path = shutil.which(name)
-        if path:
-            return [path]
-    candidates: list[Path] = []
-    for d in (HOME / "Downloads", HOME / "Applications", HOME / ".local" / "bin"):
-        if d.is_dir():
-            candidates.extend(d.glob("T3-Code*.AppImage"))
-            candidates.extend(d.glob("t3-code*.AppImage"))
-    if candidates:
-        newest = max(candidates, key=lambda p: p.stat().st_mtime)
-        return [str(newest)]
-    return None
-
 
 def resume_command(sid: str, source: str) -> Optional[list[str]]:
     """Resolve the command that resumes a session, or None if unavailable."""
@@ -1305,8 +1088,6 @@ def resume_command(sid: str, source: str) -> Optional[list[str]]:
         if source == SOURCE_CLAUDE:
             cmd[0] = os.environ.get("CLAUDE_CMD", cmd[0])
         return cmd
-    if source == SOURCE_T3:
-        return t3_app_command()
     return None
 
 
@@ -1327,35 +1108,6 @@ def _search_codex(query: str, use_regex: bool, case_mode: str) -> list[str]:
                     continue
                 if any(pattern.search(v or "") for v in (title, first, preview)):
                     sids.append(sid)
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return sids
-
-
-def _search_t3(query: str, use_regex: bool, case_mode: str) -> list[str]:
-    """T3 content search over thread messages."""
-    pattern = _compile_search_pattern(query, use_regex, case_mode)
-    sids: list[str] = []
-    for db in _t3_dbs():
-        conn = _sqlite_ro(db)
-        if conn is None:
-            continue
-        try:
-            cur = conn.execute(
-                "SELECT DISTINCT thread_id FROM projection_thread_messages "
-                "WHERE role IN ('user','assistant')"
-            )
-            for (tid,) in cur.fetchall():
-                if tid in sids:
-                    continue
-                mc = conn.execute(
-                    "SELECT text FROM projection_thread_messages WHERE thread_id = ?",
-                    (tid,),
-                )
-                if any(pattern.search(t or "") for (t,) in mc.fetchall()):
-                    sids.append(tid)
         except sqlite3.Error:
             pass
         finally:
@@ -1483,10 +1235,6 @@ def list_sessions(
     if not _hf or _hf == SOURCE_CODEX:
         rows.extend(_list_codex_sessions(get_names("codex")))
 
-    # ── T3 Code ──
-    if not _hf or _hf == SOURCE_T3:
-        rows.extend(_list_t3_sessions(get_names("t3")))
-
     # ── Opencode ──
     sess_base = OPENCODE_STORAGE / "session"
     if (not _hf or _hf == SOURCE_OPENCODE) and sess_base.is_dir():
@@ -1565,9 +1313,8 @@ def list_trash() -> list[TrashEntry]:
         )
     rows.sort(key=lambda r: r[0], reverse=True)
     out = [r[1] for r in rows]
-    # Sqlite-flagged trash: codex archived threads + t3 deleted threads
+    # Sqlite-flagged trash: codex archived threads
     out.extend(e for e in _codex_archived_entries() if e.sid not in seen)
-    out.extend(e for e in _t3_deleted_entries() if e.sid not in seen)
     return out
 
 
@@ -1700,7 +1447,6 @@ def search_sessions(
         for hits_fn, list_fn, bucket in (
             (_search_copilot, _list_copilot_sessions, "copilot"),
             (_search_codex, _list_codex_sessions, "codex"),
-            (_search_t3, _list_t3_sessions, "t3"),
         ):
             hits = set(hits_fn(query, use_regex, case_mode))
             if not hits:
@@ -1768,11 +1514,6 @@ def preview_session(sid: str) -> str:
     codex_row = _codex_thread_row(sid)
     if codex_row is not None:
         return _preview_codex(sid, codex_row)
-
-    # T3 Code (sqlite-based)
-    t3_hit = _t3_thread_db(sid)
-    if t3_hit is not None:
-        return _preview_t3(sid, t3_hit[0], t3_hit[1])
 
     meta = _read_trash_meta(sid)
     if meta.get("source") == SOURCE_OPENCODE:
@@ -2159,10 +1900,6 @@ def trash_session(sid: str) -> None:
             if not _codex_set_archived(sid, True):
                 raise ValueError(f"Could not archive Codex session: {sid}")
             return
-        if _t3_thread_db(sid) is not None:
-            if not _t3_set_deleted(sid, True):
-                raise ValueError(f"Could not trash T3 session: {sid}")
-            return
         raise ValueError(f"Session not found: {sid}")
     pid = f.parent.name
     source = _detect_source(str(f))
@@ -2190,10 +1927,8 @@ def restore_session(sid: str) -> None:
     name = meta.get("name", "")
 
     if not meta:
-        # Sqlite-flagged trash (codex archived / t3 deleted) has no meta file
+        # Sqlite-flagged trash (codex archived threads) has no meta file
         if _codex_set_archived(sid, False):
-            return
-        if _t3_set_deleted(sid, False):
             return
 
     if source == SOURCE_OPENCODE:
@@ -2238,14 +1973,12 @@ def delete_trashed(sid: str) -> None:
         _trash_jsonl_path(sid).unlink(missing_ok=True)
         shutil.rmtree(TRASH_DIR / sid, ignore_errors=True)
     else:
-        # No meta file: stray jsonl, codex archived, or t3 deleted
+        # No meta file: stray jsonl or codex archived thread
         stray = _trash_jsonl_path(sid)
         if stray.exists():
             stray.unlink(missing_ok=True)
         elif _codex_thread_row(sid) is not None:
             _delete_codex_session(sid)
-        elif _t3_thread_db(sid) is not None:
-            _delete_t3_session(sid)
     _trash_meta_path(sid).unlink(missing_ok=True)
 
 

@@ -1123,7 +1123,6 @@ class BrowseScreen(Screen[None]):
         Binding("5", "select_harness(4)", "Harness 4", show=False),
         Binding("6", "select_harness(5)", "Harness 5", show=False),
         Binding("7", "select_harness(6)", "Harness 6", show=False),
-        Binding("8", "select_harness(7)", "Harness 7", show=False),
     ]
 
     DEFAULT_CSS = (
@@ -1179,7 +1178,7 @@ class BrowseScreen(Screen[None]):
         "enter=resume  /=filter  p=menu",
         "d=trash  r=rename  t=trash-bin",
         "a=scope  s=search  o=sort",
-        "1-8=harness filter",
+        "1-7=harness filter",
     ]
 
     def __init__(self, all_projects: bool = True, cwd: Optional[str] = None) -> None:

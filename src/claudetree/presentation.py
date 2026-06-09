@@ -9,10 +9,9 @@ from typing import Iterable
 from rich.text import Text
 
 from .backend import (
-    Session, TrashEntry, pid_to_path,
-    SOURCE_CLAUDE, SOURCE_HERMES, SOURCE_OPENCLAW, SOURCE_OPENCODE,
+    Session, TrashEntry,
+    SOURCE_CLAUDE,
     HARNESS_MAP,
-    _opencode_project_path,
 )
 
 
@@ -32,10 +31,8 @@ def _compact(text: str, limit: int = 72) -> str:
 
 
 def _project_label(session: Session) -> str:
-    if session.source == SOURCE_OPENCODE:
-        return _opencode_project_path(session.project_id)
     if session.project_id:
-        return pid_to_path(session.project_id)
+        return session.project_path
     return "unknown project"
 
 
@@ -148,6 +145,13 @@ def _token_score(query: str, candidate: str) -> int:
         score += idx - pos
         pos = idx + 1
     return score + (len(c) - len(q))
+
+
+def fuzzy_match(query: str, haystack: str) -> bool:
+    """fzf-style match: every query word must appear as a substring or
+    an in-order character subsequence of the haystack."""
+    hs = haystack.lower()
+    return all(_token_score(w, hs) < 10_000 for w in query.lower().split())
 
 
 def filter_commands(query: str, commands: Iterable[CommandSpec]) -> list[CommandSpec]:

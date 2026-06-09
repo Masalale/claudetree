@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claudetree"
-version = "0.1.0"
-description = "A Textual TUI session manager for Claude Code"
+version = "0.2.0"
+description = "A Textual TUI session manager for AI coding harnesses: Claude Code, Opencode, Copilot, PI, Hermes, Codex, T3 Code"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

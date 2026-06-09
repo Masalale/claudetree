@@ -22,9 +22,9 @@ from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, St
 from .backend import (
     HARNESSES,
     HARNESS_MAP,
-    PROJECTS_DIR,
     Session,
     TrashEntry,
+    delete_trashed,
     empty_trash,
     list_sessions,
     list_trash,
@@ -32,6 +32,7 @@ from .backend import (
     preview_session,
     project_for_session,
     restore_session,
+    resume_command,
     search_sessions,
     set_name,
     trash_session,
@@ -39,6 +40,7 @@ from .backend import (
 from .presentation import (
     CommandSpec,
     filter_commands,
+    fuzzy_match,
     session_row_text,
     status_strip_text,
     trash_row_text,
@@ -452,9 +454,10 @@ class CommandPaletteScreen(ModalScreen[str | None]):
 
     def on_mount(self) -> None:
         self.query_one("#palette-input", PaletteInput).focus()
-        self._render("")
+        self._render_commands("")
 
-    def _render(self, query: str) -> None:
+    # NB: must not be named `_render` — that shadows Textual's Widget._render()
+    def _render_commands(self, query: str) -> None:
         self._visible = filter_commands(query, self._commands)
         lv = self.query_one("#palette-list", ListView)
         lv.clear()
@@ -501,7 +504,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
 
     @on(Input.Changed, "#palette-input")
     def _changed(self, event: Input.Changed) -> None:
-        self._render(event.value)
+        self._render_commands(event.value)
 
     @on(Input.Submitted, "#palette-input")
     def _submitted(self, event: Input.Submitted) -> None:
@@ -906,6 +909,15 @@ class SessionPreviewScreen(Screen[None]):
         )
 
     def action_confirm(self) -> None:
+        if resume_command(self._session.sid, self._session.source) is None:
+            harness = HARNESS_MAP.get(self._session.source)
+            label = harness.label if harness else self._session.source
+            self.notify(
+                f"No way to resume this {label} session was found "
+                f"(is the {label} app installed?).",
+                severity="warning",
+            )
+            return
         self.app.exit(("resume", self._session.sid, self._session.source))
 
     def action_cancel(self) -> None:
@@ -960,15 +972,20 @@ class DirectoryPickerScreen(Screen[None]):
         self._build_dirs()
         self.query_one("#dir-filter", Input).focus()
 
+    @work(thread=True, exclusive=True)
     def _build_dirs(self) -> None:
         sessions = list_sessions(cwd=self._cwd, all_projects=True)
         counts: dict[str, int] = {}
         for s in sessions:
             counts[s.project_id] = counts.get(s.project_id, 0) + 1
-        self._all_dirs = sorted(
+        all_dirs = sorted(
             [(pid_to_path(pid), pid, cnt) for pid, cnt in counts.items()],
             key=lambda x: x[0],
         )
+        self.app.call_from_thread(self._apply_dirs, all_dirs)
+
+    def _apply_dirs(self, all_dirs: list[tuple[str, str, int]]) -> None:
+        self._all_dirs = all_dirs
         self._dirs = self._all_dirs[:]
         self._render_list()
 
@@ -1099,6 +1116,14 @@ class BrowseScreen(Screen[None]):
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("q", "quit_app", "Quit", show=False),
         Binding("/", "start_filter", "Filter", show=True),
+        Binding("1", "select_harness(0)", "All", show=False),
+        Binding("2", "select_harness(1)", "Harness 1", show=False),
+        Binding("3", "select_harness(2)", "Harness 2", show=False),
+        Binding("4", "select_harness(3)", "Harness 3", show=False),
+        Binding("5", "select_harness(4)", "Harness 4", show=False),
+        Binding("6", "select_harness(5)", "Harness 5", show=False),
+        Binding("7", "select_harness(6)", "Harness 6", show=False),
+        Binding("8", "select_harness(7)", "Harness 7", show=False),
     ]
 
     DEFAULT_CSS = (
@@ -1154,6 +1179,7 @@ class BrowseScreen(Screen[None]):
         "enter=resume  /=filter  p=menu",
         "d=trash  r=rename  t=trash-bin",
         "a=scope  s=search  o=sort",
+        "1-8=harness filter",
     ]
 
     def __init__(self, all_projects: bool = True, cwd: Optional[str] = None) -> None:
@@ -1170,6 +1196,8 @@ class BrowseScreen(Screen[None]):
         self._ctx_session: Optional[Session] = None
         self._harness_filter: Optional[str] = None  # None = All harnesses
         self._rail_collapsed: bool = False
+        self._loaded: bool = False
+        self._restore_index: Optional[int] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -1192,6 +1220,7 @@ class BrowseScreen(Screen[None]):
         self._update_subtitle()
         self._update_status()
         self._populate_rail()
+        self.query_one("#preview", Static).update(RichMarkdown("*Scanning sessions…*"))
         self._load()
         self.query_one("#sessions", ListView).focus()
         self._hint_timer = self.set_interval(4, self._rotate_hint)
@@ -1278,26 +1307,38 @@ class BrowseScreen(Screen[None]):
             if isinstance(item, HarnessRailItem):
                 item.refresh_label(compact=self._rail_collapsed)
 
-    def _load(self) -> None:
-        self._all_sessions = list_sessions(cwd=self._cwd, all_projects=self._all_projects)
+    def _load(self, keep_index: bool = False) -> None:
+        if keep_index:
+            self._restore_index = self.query_one("#sessions", ListView).index or 0
+        self._fetch_sessions()
+
+    @work(thread=True, exclusive=True, group="session-load")
+    def _fetch_sessions(self) -> None:
+        rows = list_sessions(cwd=self._cwd, all_projects=self._all_projects)
+        self.app.call_from_thread(self._apply_sessions, rows)
+
+    def _apply_sessions(self, rows: list[Session]) -> None:
+        self._loaded = True
+        self._all_sessions = rows
+        self._update_rail_counts()
+        self._refilter()
+
+    def _refilter(self) -> None:
+        """Re-derive the visible list from the cached session set."""
         if self._harness_filter:
             self._sessions = [s for s in self._all_sessions if s.source == self._harness_filter]
         else:
             self._sessions = list(self._all_sessions)
-        self._update_rail_counts()
         fi = self.query_one("#filter", FilterInput)
         self._apply_filter(fi.value)
         self._update_status()
 
     def _apply_filter(self, query: str) -> None:
-        q = query.lower().split()
-        if q:
+        if query.strip():
             self._filtered = [
                 s
                 for s in self._sessions
-                if all(
-                    w in f"{s.name} {s.first_msg} {s.project_path}".lower() for w in q
-                )
+                if fuzzy_match(query, f"{s.name} {s.first_msg} {s.project_path}")
             ]
         else:
             self._filtered = list(self._sessions)
@@ -1316,12 +1357,19 @@ class BrowseScreen(Screen[None]):
         for s in self._filtered:
             lv.append(SessionItem(s, show_project=self._all_projects))
         if self._filtered:
-            self._load_preview(self._filtered[0].sid)
+            idx = 0
+            if self._restore_index is not None:
+                idx = min(self._restore_index, len(self._filtered) - 1)
+                self._restore_index = None
+            lv.index = idx
+            self._load_preview(self._filtered[idx].sid)
         else:
             self.query_one("#preview", Static).update(self._empty_state_msg())
         self._update_status()
 
     def _empty_state_msg(self) -> str:
+        if not self._loaded:
+            return "*Scanning sessions…*"
         if self._harness_filter:
             h = HARNESS_MAP.get(self._harness_filter)
             label = f"{h.icon} {h.label}" if h else self._harness_filter
@@ -1398,12 +1446,22 @@ class BrowseScreen(Screen[None]):
     @on(ListView.Selected, "#harness-rail")
     def _harness_rail_selected(self, event: ListView.Selected) -> None:
         if isinstance(event.item, HarnessRailItem):
-            hid = event.item.harness_id
-            self._harness_filter = hid if hid else None
-            self._load()
-            self._update_subtitle()
-            self._sync_rail_highlight()
-            self.query_one("#sessions", ListView).focus()
+            self._set_harness_filter(event.item.harness_id or None)
+
+    def _set_harness_filter(self, harness_id: Optional[str]) -> None:
+        self._harness_filter = harness_id
+        # Instant: refilter the cached list; no disk rescan needed
+        self._refilter()
+        self._update_subtitle()
+        self._sync_rail_highlight()
+        self.query_one("#sessions", ListView).focus()
+
+    def action_select_harness(self, idx: int) -> None:
+        """Jump to a harness via number keys: 1 = All, 2.. follow rail order."""
+        if idx == 0:
+            self._set_harness_filter(None)
+        elif idx - 1 < len(HARNESSES):
+            self._set_harness_filter(HARNESSES[idx - 1].id)
 
     # ── actions ───────────────────────────────────────────────────────────────
 
@@ -1413,17 +1471,12 @@ class BrowseScreen(Screen[None]):
             return
         if not _guard_trashable_session(self, s):
             return
-        lv = self.query_one("#sessions", ListView)
-        idx = lv.index or 0
         try:
             trash_session(s.sid)
         except Exception as e:
             self.notify(f"Error: {e}", severity="error")
             return
-        self._load()
-        lv = self.query_one("#sessions", ListView)
-        if self._filtered:
-            lv.index = min(idx, len(self._filtered) - 1)
+        self._load(keep_index=True)
         self.notify("Trashed.", timeout=1)
 
     def action_rename_session(self) -> None:
@@ -1436,7 +1489,7 @@ class BrowseScreen(Screen[None]):
                 pid = project_for_session(s.sid)
                 if pid:
                     set_name(pid, s.sid, new_name)
-                    self._load()
+                    self._load(keep_index=True)
                     self.notify(f"Renamed: {new_name}", timeout=2)
 
         self.app.push_screen(InputDialog("New name:", initial=s.name), on_rename)
@@ -1545,16 +1598,9 @@ class BrowseScreen(Screen[None]):
             elif key == "quit":
                 self.action_quit_app()
             elif key == "harness_all":
-                self._harness_filter = None
-                self._load()
-                self._update_subtitle()
-                self._sync_rail_highlight()
+                self._set_harness_filter(None)
             elif key.startswith("harness_"):
-                hid = key[len("harness_"):]
-                self._harness_filter = hid
-                self._load()
-                self._update_subtitle()
-                self._sync_rail_highlight()
+                self._set_harness_filter(key[len("harness_"):])
 
         run_command_palette(self.app, "Command palette", commands, dispatch,
                             hint="Enter runs • Esc closes • type to filter")
@@ -1582,24 +1628,19 @@ class BrowseScreen(Screen[None]):
                     pid = project_for_session(s.sid)
                     if pid:
                         set_name(pid, s.sid, new_name)
-                        self._load()
+                        self._load(keep_index=True)
                         self.notify(f"Renamed: {new_name}", timeout=2)
 
             self.app.push_screen(InputDialog("New name:", initial=s.name), on_rename)
         elif event.value == "trash":
             if not _guard_trashable_session(self, s):
                 return
-            lv = self.query_one("#sessions", ListView)
-            idx = lv.index or 0
             try:
                 trash_session(s.sid)
             except Exception as e:
                 self.notify(f"Error: {e}", severity="error")
                 return
-            self._load()
-            lv = self.query_one("#sessions", ListView)
-            if self._filtered:
-                lv.index = min(idx, len(self._filtered) - 1)
+            self._load(keep_index=True)
             self.notify("Trashed.", timeout=1)
 
 
@@ -1729,6 +1770,7 @@ class ContentSearchScreen(Screen[None]):
         for s in self._sessions:
             lv.append(SessionItem(s, show_project=self._all_projects))
         if self._sessions:
+            lv.index = 0
             self._load_preview(self._sessions[0].sid)
         else:
             self.query_one("#preview", Static).update(f"*No results for: {query}*")
@@ -1971,6 +2013,7 @@ class TrashScreen(Screen[None]):
         for entry in self._entries:
             lv.append(TrashItem(entry))
         if self._entries:
+            lv.index = 0
             self._load_preview(self._entries[0].sid)
         else:
             self.query_one("#preview", Static).update("*Trash is empty.*")
@@ -2050,10 +2093,11 @@ class TrashScreen(Screen[None]):
     def _do_delete(self, e: TrashEntry) -> None:
         def on_confirm(yes: bool | None) -> None:
             if yes:
-                from .backend import TRASH_DIR
-
-                (TRASH_DIR / f"{e.sid}.jsonl").unlink(missing_ok=True)
-                (TRASH_DIR / f"{e.sid}.meta").unlink(missing_ok=True)
+                try:
+                    delete_trashed(e.sid)
+                except Exception as err:
+                    self.notify(f"Error: {err}", severity="error")
+                    return
                 self._load()
                 self.notify("Deleted.", timeout=1)
 

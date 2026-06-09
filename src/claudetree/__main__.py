@@ -90,17 +90,13 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
             sys.exit(1)
         sid = result[1]
         source = result[2] if len(result) >= 3 else "claude"
-        from .backend import HARNESS_MAP, SOURCE_CLAUDE, project_for_session, pid_to_path
-        h = HARNESS_MAP.get(source)
-        if h:
-            cmd = h.build_resume_cmd(sid)
-            # Allow CLAUDE_CMD override for Claude Code only
-            if source == SOURCE_CLAUDE:
-                cmd[0] = os.environ.get("CLAUDE_CMD", cmd[0])
-        else:
-            # Fallback: legacy behaviour
-            claude = os.environ.get("CLAUDE_CMD", "claude")
-            cmd = [claude, "--resume", sid]
+        from .backend import HARNESS_MAP, resume_command
+        cmd = resume_command(sid, source)
+        if cmd is None:
+            h = HARNESS_MAP.get(source)
+            label = h.label if h else source
+            print(f"Could not find a way to resume this {label} session.", file=sys.stderr)
+            sys.exit(1)
         _chdir_to_session_project(sid, source)
         os.execvp(cmd[0], cmd)
     elif action == "new":
@@ -109,23 +105,10 @@ def _picker(initial_screen: str = "browse", all_projects: bool = True) -> None:
 
 
 def _chdir_to_session_project(sid: str, source: str) -> None:
-    from .backend import (
-        project_for_session,
-        pid_to_path,
-        SOURCE_CLAUDE,
-        SOURCE_OPENCODE,
-    )
-    pid = project_for_session(sid)
-    if not pid:
-        return
-    if source == SOURCE_OPENCODE:
-        from .backend import _opencode_project_path
-        path = os.path.expanduser(_opencode_project_path(pid))
-    elif source == SOURCE_CLAUDE:
-        path = os.path.expanduser(pid_to_path(pid))
-    else:
-        return
-    if os.path.isdir(path):
+    from .backend import session_cwd
+
+    path = session_cwd(sid, source)
+    if path and os.path.isdir(path):
         os.chdir(path)
 
 
@@ -191,7 +174,8 @@ def _run_internal(args: list[str]) -> None:
 
 def _print_help() -> None:
     print("""\
-claudetree — Claude Code session manager
+claudetree — AI coding session manager
+Harnesses: Claude Code, Opencode, Copilot, PI, Hermes, Codex, T3 Code
 
   claudetree              Browse and resume sessions
   claudetree rm [id]      Trash a session (opens trash bin if no id)
@@ -205,6 +189,7 @@ Keybindings (in picker):
   a          Scope picker         o       Cycle sort
   s          Search content       p       Session menu
   /          Filter current list  q       Quit
+  1-8        Harness filter (1=all, then rail order)
 
 Preview find mode:
   f          Focus find box (supports regex)

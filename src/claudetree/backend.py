@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
 HOME = Path.home()
 
@@ -24,18 +25,30 @@ TRASH_DIR = HOME / ".claude" / "trash"
 # Hermes
 HERMES_SESSIONS_DIR = HOME / ".hermes" / "sessions"
 
-# OpenClaw
-OPENCLAW_SESSIONS_DIR = HOME / ".openclaw" / "agents" / "main" / "sessions"
+# PI
+PI_SESSIONS_DIR = HOME / ".pi" / "agent" / "sessions"
+
+# GitHub Copilot CLI
+COPILOT_DB = HOME / ".copilot" / "session-store.db"
 
 # Opencode
 OPENCODE_STORAGE = HOME / ".local" / "share" / "opencode" / "storage"
+
+# Codex CLI
+CODEX_DIR = HOME / ".codex"
+
+# T3 Code (desktop app)
+T3_DIR = HOME / ".t3"
 
 # ── Source labels ──────────────────────────────────────────────────────────
 
 SOURCE_CLAUDE = "claude"
 SOURCE_HERMES = "hermes"
-SOURCE_OPENCLAW = "openclaw"
+SOURCE_PI = "pi"
+SOURCE_COPILOT = "copilot"
 SOURCE_OPENCODE = "opencode"
+SOURCE_CODEX = "codex"
+SOURCE_T3 = "t3"
 
 
 # ── Harness registry ───────────────────────────────────────────────────────
@@ -48,17 +61,24 @@ class Harness:
     color: str             # Rich color name used for display
     icon: str              # single-char glyph (falls back gracefully)
     supports_trash: bool
-    resume_cmd: tuple[str, ...]  # {sid} replaced at runtime
+    resume_cmd: tuple[str, ...]  # {sid} replaced at runtime; empty = no CLI resume
+
+    @property
+    def can_resume(self) -> bool:
+        return bool(self.resume_cmd)
 
     def build_resume_cmd(self, sid: str) -> list[str]:
         return [part.replace("{sid}", sid) for part in self.resume_cmd]
 
 
 HARNESSES: list[Harness] = [
-    Harness(SOURCE_CLAUDE,   "Claude Code", "cyan",    "★", True,  ("claude",   "--resume", "{sid}")),
-    Harness(SOURCE_HERMES,   "Hermes",      "magenta", "⚡", True,  ("hermes",   "resume",   "{sid}")),
-    Harness(SOURCE_OPENCLAW, "OpenClaw",    "green",   "◆", True,  ("openclaw", "resume",   "{sid}")),
-    Harness(SOURCE_OPENCODE, "Opencode",    "yellow",  "▲", True,  ("opencode", "session",  "resume", "{sid}")),
+    Harness(SOURCE_CLAUDE,   "Claude Code", "cyan",    "★", True, ("claude",   "--resume",  "{sid}")),
+    Harness(SOURCE_OPENCODE, "Opencode",    "yellow",  "▲", True, ("opencode", "--session", "{sid}")),
+    Harness(SOURCE_COPILOT,  "Copilot",     "blue",    "◉", True, ("copilot",  "--resume={sid}")),
+    Harness(SOURCE_PI,       "PI",          "green",   "π", True, ("pi",       "--session", "{sid}")),
+    Harness(SOURCE_HERMES,   "Hermes",      "magenta", "⚡", True, ("hermes",   "--resume",  "{sid}")),
+    Harness(SOURCE_CODEX,    "Codex",       "white",   "◆", True, ("codex",    "resume",    "{sid}")),
+    Harness(SOURCE_T3,       "T3 Code",     "red",     "▼", True, ()),  # resumed by launching the T3 app
 ]
 
 HARNESS_MAP: dict[str, Harness] = {h.id: h for h in HARNESSES}
@@ -122,6 +142,28 @@ def pid_to_path(project_id: str) -> str:
     return raw.replace(str(HOME), "~")
 
 
+def pi_encode_cwd(cwd: str) -> str:
+    """Encode a cwd the way PI names its per-project session directories."""
+    return "-" + cwd.replace("/", "-") + "-"
+
+
+def pi_decode_pid(project_id: str) -> str:
+    """Decode a PI session-directory name back to a path."""
+    raw = project_id[1:-1].replace("-", "/") if len(project_id) > 2 else project_id
+    return raw.rstrip("/").replace(str(HOME), "~") or "/"
+
+
+def _project_path_for(source: str, project_id: str) -> str:
+    if source == SOURCE_OPENCODE:
+        return _opencode_project_path(project_id)
+    if source == SOURCE_PI:
+        return pi_decode_pid(project_id)
+    if source in (SOURCE_COPILOT, SOURCE_CODEX, SOURCE_T3):
+        # project_id is already an absolute path for sqlite-backed harnesses
+        return project_id.replace(str(HOME), "~") if project_id else ""
+    return pid_to_path(project_id)
+
+
 @dataclass
 class Session:
     sid: str
@@ -136,9 +178,7 @@ class Session:
 
     @property
     def project_path(self) -> str:
-        if self.source == SOURCE_OPENCODE:
-            return _opencode_project_path(self.project_id)
-        return pid_to_path(self.project_id)
+        return _project_path_for(self.source, self.project_id)
 
     @property
     def display_label(self) -> str:
@@ -155,9 +195,7 @@ class TrashEntry:
 
     @property
     def project_path(self) -> str:
-        if self.source == SOURCE_OPENCODE:
-            return _opencode_project_path(self.project_id)
-        return pid_to_path(self.project_id)
+        return _project_path_for(self.source, self.project_id)
 
 
 # ── Age helpers ────────────────────────────────────────────────────────────
@@ -168,6 +206,9 @@ def _compute_age(last_time) -> str:
             dt = datetime.fromtimestamp(last_time / 1000, tz=timezone.utc)
         else:
             dt = datetime.fromisoformat(str(last_time).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            # Naive timestamps (Hermes) are written in local time
+            dt = dt.astimezone()
         d = datetime.now(timezone.utc) - dt
         if d.days:
             return f"{d.days}d"
@@ -209,7 +250,7 @@ def rm_name(project_id: str, sid: str) -> None:
 # ── File finding ───────────────────────────────────────────────────────────
 
 def _find_session_file(sid: str) -> Optional[Path]:
-    """Find a JSONL session file across all sources (not Opencode)."""
+    """Find a JSONL session file across all sources (not Opencode/Copilot)."""
     for base in _all_project_dirs():
         for f in base.glob(f"*/{sid}.jsonl"):
             return f
@@ -221,11 +262,22 @@ def _find_session_file(sid: str) -> Optional[Path]:
         f = HERMES_SESSIONS_DIR / f"{sid}.jsonl"
         if f.exists():
             return f
-    if OPENCLAW_SESSIONS_DIR.is_dir():
-        f = OPENCLAW_SESSIONS_DIR / f"{sid}.jsonl"
-        if f.exists():
-            return f
+    return _find_pi_session(sid)
+
+
+def _find_pi_session(sid: str) -> Optional[Path]:
+    """Find a PI session file. PI sids are the UUID suffix of the filename."""
+    if not PI_SESSIONS_DIR.is_dir():
+        return None
+    for f in PI_SESSIONS_DIR.glob(f"*/*{sid}.jsonl"):
+        return f
     return None
+
+
+def _pi_sid_from_path(p: Path) -> str:
+    """Extract the resumable sid (UUID part) from a PI session filename."""
+    stem = p.stem
+    return stem.rsplit("_", 1)[-1] if "_" in stem else stem
 
 
 def _find_opencode_session(sid: str) -> Optional[Path]:
@@ -243,13 +295,8 @@ def _find_opencode_session(sid: str) -> Optional[Path]:
 
 
 def _names_bucket_for_source(source: str, project_id: str) -> str:
-    if source == SOURCE_HERMES:
-        return "hermes"
-    if source == SOURCE_OPENCLAW:
-        return "openclaw"
-    if source == SOURCE_OPENCODE:
-        return "opencode"
-    return project_id
+    """Custom names are kept per-project for Claude, per-harness otherwise."""
+    return project_id if source == SOURCE_CLAUDE else source
 
 
 def _trash_meta_path(sid: str) -> Path:
@@ -282,6 +329,36 @@ def project_for_session(sid: str) -> Optional[str]:
     f = _find_opencode_session(sid)
     if f:
         return _names_bucket_for_source(SOURCE_OPENCODE, f.parent.name)
+    if _copilot_session_row(sid) is not None:
+        return _names_bucket_for_source(SOURCE_COPILOT, "")
+    if _codex_thread_row(sid) is not None:
+        return _names_bucket_for_source(SOURCE_CODEX, "")
+    if _t3_thread_db(sid) is not None:
+        return _names_bucket_for_source(SOURCE_T3, "")
+    return None
+
+
+def session_cwd(sid: str, source: str) -> Optional[str]:
+    """Best-effort absolute working directory for a session, for chdir-on-resume."""
+    if source == SOURCE_OPENCODE:
+        pid = project_for_session(sid)
+        return os.path.expanduser(_opencode_project_path(pid)) if pid else None
+    if source == SOURCE_COPILOT:
+        row = _copilot_session_row(sid)
+        return row[1] if row else None
+    if source == SOURCE_CODEX:
+        row = _codex_thread_row(sid)
+        return _win_to_wsl_path(row[0]) if row and row[0] else None
+    if source == SOURCE_T3:
+        hit = _t3_thread_db(sid)
+        return _win_to_wsl_path(hit[1][1]) if hit and hit[1][1] else None
+    f = _find_session_file(sid)
+    if not f:
+        return None
+    if source == SOURCE_PI:
+        return os.path.expanduser(pi_decode_pid(f.parent.name))
+    if source == SOURCE_CLAUDE and f.parent.name != "transcripts":
+        return os.path.expanduser(pid_to_path(f.parent.name))
     return None
 
 
@@ -360,8 +437,8 @@ def _parse_hermes_jsonl(filepath: str):
     return last_time, cnt, first
 
 
-def _parse_openclaw_jsonl(filepath: str):
-    """Parse OpenClaw sessions: type=message with nested message.role/content."""
+def _parse_pi_jsonl(filepath: str):
+    """Parse PI sessions: type=message with nested message.role/content."""
     last_time, cnt, first = "", 0, ""
     try:
         with open(filepath, encoding="utf-8", errors="ignore") as fh:
@@ -386,6 +463,14 @@ def _parse_openclaw_jsonl(filepath: str):
     except Exception:
         pass
     return last_time, cnt, first
+
+
+def _opencode_is_subagent(session_file: Path) -> bool:
+    """True if an Opencode session is a child (Task/subagent) session."""
+    try:
+        return bool(json.loads(session_file.read_text()).get("parentID"))
+    except Exception:
+        return False
 
 
 def _parse_opencode_session(session_file: Path):
@@ -437,6 +522,845 @@ def _parse_opencode_session(session_file: Path):
                                 except Exception:
                                     pass
     return last_time, cnt, first, title
+
+
+# ── Copilot (sqlite session store) ────────────────────────────────────────
+
+def _copilot_connect() -> Optional[sqlite3.Connection]:
+    if not COPILOT_DB.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{COPILOT_DB}?mode=ro", uri=True)
+        conn.execute("SELECT 1 FROM sessions LIMIT 1")
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def _copilot_session_row(sid: str) -> Optional[tuple]:
+    """Return (id, cwd, summary, updated_at) for a Copilot session, or None."""
+    conn = _copilot_connect()
+    if conn is None:
+        return None
+    try:
+        cur = conn.execute(
+            "SELECT id, cwd, summary, updated_at FROM sessions WHERE id = ?", (sid,)
+        )
+        return cur.fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _copilot_turns(conn: sqlite3.Connection, sid: str) -> list[tuple[str, str]]:
+    """Return ordered (user_message, assistant_response) pairs for a session."""
+    try:
+        cur = conn.execute(
+            "SELECT user_message, assistant_response FROM turns "
+            "WHERE session_id = ? ORDER BY turn_index",
+            (sid,),
+        )
+        return [(u or "", a or "") for u, a in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+
+
+def _list_copilot_sessions(names: dict[str, str]) -> list[Session]:
+    conn = _copilot_connect()
+    if conn is None:
+        return []
+    rows: list[Session] = []
+    try:
+        cur = conn.execute("SELECT id, cwd, summary, updated_at FROM sessions")
+        for sid, cwd, summary, updated_at in cur.fetchall():
+            turns = _copilot_turns(conn, sid)
+            cnt = sum((1 if u else 0) + (1 if a else 0) for u, a in turns)
+            if not cnt:
+                continue
+            first = next((u for u, _ in turns if u), "")
+            first = first.strip().replace("\n", " ")[:60]
+            last_time = updated_at or ""
+            rows.append(Session(
+                sid=sid, name=names.get(sid, "") or (summary or ""),
+                first_msg=first, age=_compute_age(last_time) if last_time else "?",
+                msgs=cnt, project_id=cwd or "",
+                sort_time=str(last_time), source=SOURCE_COPILOT,
+            ))
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return rows
+
+
+# Tables holding a Copilot session's data, with their session-key column.
+_COPILOT_SESSION_TABLES: tuple[tuple[str, str], ...] = (
+    ("sessions", "id"),
+    ("turns", "session_id"),
+    ("checkpoints", "session_id"),
+    ("session_files", "session_id"),
+    ("session_refs", "session_id"),
+    ("forge_trajectory_events", "session_id"),
+)
+
+
+def _copilot_connect_rw() -> Optional[sqlite3.Connection]:
+    if not COPILOT_DB.exists():
+        return None
+    try:
+        conn = sqlite3.connect(COPILOT_DB, timeout=5)
+        conn.execute("SELECT 1 FROM sessions LIMIT 1")
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def _copilot_bundle_path(sid: str) -> Path:
+    return TRASH_DIR / f"{sid}.copilot.json"
+
+
+def _trash_copilot_session(sid: str) -> None:
+    """Move a Copilot session out of its db into a restorable trash bundle."""
+    row = _copilot_session_row(sid)
+    if row is None:
+        raise ValueError(f"Copilot session not found: {sid}")
+    conn = _copilot_connect_rw()
+    if conn is None:
+        raise ValueError("Cannot open Copilot's database for writing.")
+
+    _, cwd, summary, _ = row
+    names = get_names("copilot")
+    name = names.get(sid, "") or (summary or "")
+
+    bundle: dict = {"sid": sid, "tables": {}}
+    try:
+        for table, key in _COPILOT_SESSION_TABLES:
+            try:
+                cur = conn.execute(f"SELECT * FROM {table} WHERE {key} = ?", (sid,))
+                cols = [d[0] for d in cur.description]
+                bundle["tables"][table] = {
+                    "key": key,
+                    "columns": cols,
+                    "rows": [list(r) for r in cur.fetchall()],
+                }
+            except sqlite3.Error:
+                pass
+
+        TRASH_DIR.mkdir(parents=True, exist_ok=True)
+        _copilot_bundle_path(sid).write_text(json.dumps(bundle))
+        _trash_meta_path(sid).write_text(json.dumps({
+            "project_id": cwd or "",
+            "name": name,
+            "trashed_at": int(datetime.now().timestamp()),
+            "source": SOURCE_COPILOT,
+        }))
+
+        with conn:
+            for table, key in _COPILOT_SESSION_TABLES:
+                try:
+                    conn.execute(f"DELETE FROM {table} WHERE {key} = ?", (sid,))
+                except sqlite3.Error:
+                    pass
+            # FTS index rows for this session (ignore if schema differs)
+            try:
+                conn.execute("DELETE FROM search_index WHERE session_id = ?", (sid,))
+            except sqlite3.Error:
+                pass
+    finally:
+        conn.close()
+    rm_name("copilot", sid)
+
+
+def _restore_copilot_session(sid: str, name: str) -> None:
+    bundle_file = _copilot_bundle_path(sid)
+    if not bundle_file.exists():
+        raise ValueError(f"Not in trash: {sid}")
+    bundle = json.loads(bundle_file.read_text())
+    conn = _copilot_connect_rw()
+    if conn is None:
+        raise ValueError("Cannot open Copilot's database for writing.")
+    try:
+        with conn:
+            for table, info in bundle.get("tables", {}).items():
+                cols = info.get("columns", [])
+                if not cols:
+                    continue
+                placeholders = ", ".join("?" for _ in cols)
+                col_list = ", ".join(cols)
+                for r in info.get("rows", []):
+                    try:
+                        conn.execute(
+                            f"INSERT OR REPLACE INTO {table} ({col_list}) VALUES ({placeholders})",
+                            r,
+                        )
+                    except sqlite3.Error:
+                        pass
+    finally:
+        conn.close()
+    bundle_file.unlink(missing_ok=True)
+    if name:
+        set_name("copilot", sid, name)
+
+
+def _preview_copilot_bundle(sid: str) -> Optional[str]:
+    """Preview a trashed Copilot session from its trash bundle."""
+    bundle_file = _copilot_bundle_path(sid)
+    if not bundle_file.exists():
+        return None
+    try:
+        bundle = json.loads(bundle_file.read_text())
+    except Exception:
+        return f"*Error reading trashed Copilot session: {sid}*"
+
+    meta = _read_trash_meta(sid)
+    name = meta.get("name", "")
+    short_path = (meta.get("project_id") or "").replace(str(HOME), "~")
+    parts: list[str] = []
+    if name:
+        parts.append(f"## {name}")
+        parts.append(f"`{short_path}` [copilot]")
+    else:
+        parts.append(f"## `{short_path}`")
+        parts.append("[copilot]")
+
+    turns_info = bundle.get("tables", {}).get("turns", {})
+    cols = turns_info.get("columns", [])
+    n = 0
+    if "user_message" in cols and "assistant_response" in cols:
+        ui, ai = cols.index("user_message"), cols.index("assistant_response")
+        ti = cols.index("turn_index") if "turn_index" in cols else None
+        rows = turns_info.get("rows", [])
+        if ti is not None:
+            rows = sorted(rows, key=lambda r: r[ti] or 0)
+        for r in rows:
+            u, a = (r[ui] or "").strip(), (r[ai] or "").strip()
+            if u:
+                parts.append("**You**")
+                parts.append(_quote(u[:500]))
+                n += 1
+            if a:
+                parts.append("**Copilot**")
+                parts.append(a[:2000])
+                n += 1
+    if n == 0:
+        parts.append("*No usable chat messages found.*")
+    return "\n".join(parts)
+
+
+def _search_copilot(query: str, use_regex: bool, case_mode: str) -> list[str]:
+    """Return Copilot session ids whose turns match the query."""
+    pattern = _compile_search_pattern(query, use_regex, case_mode)
+    conn = _copilot_connect()
+    if conn is None:
+        return []
+    sids: list[str] = []
+    try:
+        cur = conn.execute(
+            "SELECT DISTINCT session_id, user_message, assistant_response FROM turns"
+        )
+        seen: set[str] = set()
+        for sid, u, a in cur.fetchall():
+            if sid in seen:
+                continue
+            if pattern.search(u or "") or pattern.search(a or ""):
+                seen.add(sid)
+                sids.append(sid)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return sids
+
+
+# ── Codex CLI (sqlite threads + rollout JSONL) ────────────────────────────
+
+def _win_to_wsl_path(p: str) -> str:
+    """Normalize a Windows path (from a Windows-side db) to a WSL/posix path."""
+    if "\\" not in p and ":" not in p[:2]:
+        return p
+    p = p.replace("\\", "/")
+    if p.startswith("//?/"):
+        p = p[4:]
+    if p.startswith("UNC/"):
+        p = "//" + p[4:]
+    low = p.lower()
+    if low.startswith("//wsl.localhost/") or low.startswith("//wsl$/"):
+        bits = p.split("/", 4)  # ['', '', host, distro, rest]
+        return "/" + bits[4] if len(bits) > 4 else p
+    if len(p) > 1 and p[1] == ":":
+        return "/mnt/" + p[0].lower() + p[2:]
+    return p
+
+
+def _codex_session_dirs() -> list[Path]:
+    """Rollout-file directories for codex (local + Windows side)."""
+    dirs: list[Path] = []
+    for root in [CODEX_DIR, *_scan_mnt_dirs(".codex")]:
+        d = root / "sessions"
+        if d.is_dir():
+            dirs.append(d)
+    return dirs
+
+
+def _codex_dbs() -> list[Path]:
+    """Find codex state dbs (local + Windows side), newest schema version each."""
+    dbs: list[Path] = []
+    for root in [CODEX_DIR, *_scan_mnt_dirs(".codex")]:
+        if not root.is_dir():
+            continue
+        best: tuple[int, Optional[Path]] = (-1, None)
+        for f in root.glob("state_*.sqlite"):
+            try:
+                ver = int(f.stem.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+            if ver > best[0]:
+                best = (ver, f)
+        if best[1] is not None:
+            dbs.append(best[1])
+    return dbs
+
+
+def _sqlite_ro(path: Path) -> Optional[sqlite3.Connection]:
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn.execute("SELECT 1")
+        return conn
+    except sqlite3.Error:
+        return None
+
+
+def _parse_codex_rollout(path: Path):
+    """Count user/assistant messages in a codex rollout file. Returns count."""
+    cnt = 0
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                    if r.get("type") != "response_item":
+                        continue
+                    pl = r.get("payload", {})
+                    if pl.get("type") != "message":
+                        continue
+                    if pl.get("role") in ("user", "assistant") and _codex_text(pl):
+                        cnt += 1
+                except Exception:
+                    pass
+    except OSError:
+        pass
+    return cnt
+
+
+def _codex_text(payload: dict) -> str:
+    """Extract display text from a codex message payload, skipping context blobs."""
+    for block in payload.get("content", []):
+        if isinstance(block, dict) and block.get("type") in ("input_text", "output_text"):
+            text = block.get("text", "").strip()
+            if text and not text.startswith("<"):
+                return text
+    return ""
+
+
+def _codex_thread_row(sid: str) -> Optional[tuple]:
+    """Return (cwd, title, first_user_message, updated_at, rollout_path) or None."""
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT cwd, title, first_user_message, updated_at, rollout_path "
+                "FROM threads WHERE id = ?",
+                (sid,),
+            )
+            row = cur.fetchone()
+            if row:
+                return row
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return None
+
+
+def _epoch_to_iso(ts) -> str:
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except (ValueError, TypeError, OSError):
+        return ""
+
+
+def _list_codex_sessions(names: dict[str, str]) -> list[Session]:
+    rows: list[Session] = []
+    seen: set[str] = set()
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT id, cwd, title, first_user_message, updated_at, rollout_path "
+                "FROM threads WHERE archived = 0"
+            )
+            for sid, cwd, title, first, updated_at, rollout in cur.fetchall():
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                rollout_file = Path(_win_to_wsl_path(rollout or ""))
+                cnt = _parse_codex_rollout(rollout_file) if rollout_file.is_file() else 0
+                if not cnt and not (first or "").strip():
+                    continue
+                iso = _epoch_to_iso(updated_at)
+                rows.append(Session(
+                    sid=sid, name=names.get(sid, "") or (title or ""),
+                    first_msg=(first or "").strip().replace("\n", " ")[:60],
+                    age=_compute_age(iso) if iso else "?",
+                    msgs=cnt or 1, project_id=_win_to_wsl_path(cwd or ""),
+                    sort_time=iso, source=SOURCE_CODEX,
+                ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return rows
+
+
+def _preview_codex(sid: str, row: tuple) -> str:
+    cwd, title, first, _, rollout = row
+    names = get_names("codex")
+    name = names.get(sid, "") or (title or "")
+    short_path = _win_to_wsl_path(cwd or "").replace(str(HOME), "~")
+
+    parts: list[str] = []
+    if name:
+        parts.append(f"## {name}")
+        parts.append(f"`{short_path}` [codex]")
+    else:
+        parts.append(f"## `{short_path}`")
+        parts.append("[codex]")
+
+    n = 0
+    rollout_file = Path(_win_to_wsl_path(rollout or ""))
+    if rollout_file.is_file():
+        try:
+            with open(rollout_file, encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        r = json.loads(line)
+                        if r.get("type") != "response_item":
+                            continue
+                        pl = r.get("payload", {})
+                        if pl.get("type") != "message":
+                            continue
+                        role = pl.get("role", "")
+                        if role not in ("user", "assistant"):
+                            continue
+                        text = _codex_text(pl)
+                        if not text:
+                            continue
+                        n += 1
+                        if role == "user":
+                            parts.append("**You**")
+                            parts.append(_quote(text[:500]))
+                        else:
+                            parts.append("**Codex**")
+                            parts.append(text[:2000])
+                    except Exception:
+                        pass
+        except OSError:
+            pass
+    if n == 0 and (first or "").strip():
+        parts.append("**You**")
+        parts.append(_quote(first.strip()[:500]))
+        n += 1
+    if n == 0:
+        parts.append("*No usable chat messages found.*")
+    return "\n".join(parts)
+
+
+# ── T3 Code (sqlite projections) ──────────────────────────────────────────
+
+def _t3_dbs() -> list[Path]:
+    dbs: list[Path] = []
+    for root in [T3_DIR, *_scan_mnt_dirs(".t3")]:
+        f = root / "userdata" / "state.sqlite"
+        if f.is_file():
+            dbs.append(f)
+    return dbs
+
+
+def _t3_thread_db(sid: str) -> Optional[tuple[Path, tuple]]:
+    """Return (db_path, (title, workspace_root)) for a T3 thread, or None."""
+    for db in _t3_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT t.title, COALESCE(p.workspace_root, '') "
+                "FROM projection_threads t "
+                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
+                "WHERE t.thread_id = ?",
+                (sid,),
+            )
+            row = cur.fetchone()
+            if row:
+                return db, row
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return None
+
+
+def _list_t3_sessions(names: dict[str, str]) -> list[Session]:
+    rows: list[Session] = []
+    seen: set[str] = set()
+    for db in _t3_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT t.thread_id, t.title, t.updated_at, "
+                "       COALESCE(p.workspace_root, ''), "
+                "       (SELECT count(*) FROM projection_thread_messages m "
+                "        WHERE m.thread_id = t.thread_id AND m.role IN ('user','assistant')), "
+                "       (SELECT m.text FROM projection_thread_messages m "
+                "        WHERE m.thread_id = t.thread_id AND m.role = 'user' "
+                "        ORDER BY m.created_at LIMIT 1) "
+                "FROM projection_threads t "
+                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
+                "WHERE t.deleted_at IS NULL AND t.archived_at IS NULL"
+            )
+            for sid, title, updated_at, root, cnt, first in cur.fetchall():
+                if sid in seen or not cnt:
+                    continue
+                seen.add(sid)
+                rows.append(Session(
+                    sid=sid, name=names.get(sid, "") or (title or ""),
+                    first_msg=(first or "").strip().replace("\n", " ")[:60],
+                    age=_compute_age(updated_at) if updated_at else "?",
+                    msgs=cnt, project_id=_win_to_wsl_path(root or ""),
+                    sort_time=str(updated_at or ""), source=SOURCE_T3,
+                ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return rows
+
+
+def _preview_t3(sid: str, db: Path, row: tuple) -> str:
+    title, root = row
+    names = get_names("t3")
+    name = names.get(sid, "") or (title or "")
+    short_path = _win_to_wsl_path(root or "").replace(str(HOME), "~")
+
+    parts: list[str] = []
+    if name:
+        parts.append(f"## {name}")
+        parts.append(f"`{short_path}` [t3]")
+    else:
+        parts.append(f"## `{short_path}`")
+        parts.append("[t3]")
+
+    n = 0
+    conn = _sqlite_ro(db)
+    if conn is not None:
+        try:
+            cur = conn.execute(
+                "SELECT role, text FROM projection_thread_messages "
+                "WHERE thread_id = ? AND role IN ('user','assistant') "
+                "ORDER BY created_at",
+                (sid,),
+            )
+            for role, text in cur.fetchall():
+                text = (text or "").strip()
+                if not text:
+                    continue
+                n += 1
+                if role == "user":
+                    parts.append("**You**")
+                    parts.append(_quote(text[:500]))
+                else:
+                    parts.append("**Assistant**")
+                    parts.append(text[:2000])
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    if n == 0:
+        parts.append("*No usable chat messages found.*")
+    return "\n".join(parts)
+
+
+def _compile_search_pattern(query: str, use_regex: bool, case_mode: str):
+    import re as _re
+
+    flags = 0
+    if case_mode == "ignore" or (
+        case_mode == "smart" and not any(ch.isupper() for ch in query)
+    ):
+        flags = _re.IGNORECASE
+    try:
+        return _re.compile(query if use_regex else _re.escape(query), flags)
+    except _re.error:
+        return _re.compile(_re.escape(query), flags)
+
+
+# ── Codex trash (uses Codex's own archived flag) ──────────────────────────
+
+def _codex_set_archived(sid: str, archived: bool) -> bool:
+    """Toggle a codex thread's archived flag. Returns True if a row changed."""
+    ts = int(datetime.now().timestamp()) if archived else None
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            hit = conn.execute("SELECT 1 FROM threads WHERE id = ?", (sid,)).fetchone()
+        except sqlite3.Error:
+            hit = None
+        finally:
+            conn.close()
+        if not hit:
+            continue
+        try:
+            wconn = sqlite3.connect(db, timeout=5)
+            with wconn:
+                wconn.execute(
+                    "UPDATE threads SET archived = ?, archived_at = ? WHERE id = ?",
+                    (1 if archived else 0, ts, sid),
+                )
+            wconn.close()
+            return True
+        except sqlite3.Error:
+            pass
+    return False
+
+
+def _codex_archived_entries() -> list[TrashEntry]:
+    rows: list[TrashEntry] = []
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT id, title, cwd, archived_at FROM threads WHERE archived = 1"
+            )
+            for sid, title, cwd, archived_at in cur.fetchall():
+                when = ""
+                if archived_at:
+                    d = datetime.now(timezone.utc) - datetime.fromtimestamp(
+                        int(archived_at), tz=timezone.utc
+                    )
+                    when = f"{d.days}d ago" if d.days else f"{d.seconds // 3600}h ago"
+                rows.append(TrashEntry(
+                    sid=sid, name=title or "", project_id=_win_to_wsl_path(cwd or ""),
+                    when=when, source=SOURCE_CODEX,
+                ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return rows
+
+
+def _delete_codex_session(sid: str) -> None:
+    """Permanently delete a codex thread row and its rollout file."""
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            row = conn.execute(
+                "SELECT rollout_path FROM threads WHERE id = ?", (sid,)
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        finally:
+            conn.close()
+        if not row:
+            continue
+        try:
+            wconn = sqlite3.connect(db, timeout=5)
+            with wconn:
+                wconn.execute("DELETE FROM threads WHERE id = ?", (sid,))
+            wconn.close()
+        except sqlite3.Error:
+            continue
+        rollout = Path(_win_to_wsl_path(row[0] or ""))
+        if rollout.is_file():
+            rollout.unlink(missing_ok=True)
+        return
+
+
+# ── T3 trash (uses T3's own deleted_at column) ────────────────────────────
+
+def _t3_set_deleted(sid: str, deleted: bool) -> bool:
+    ts = datetime.now(timezone.utc).isoformat() if deleted else None
+    hit = _t3_thread_db(sid)
+    if hit is None:
+        return False
+    db = hit[0]
+    try:
+        wconn = sqlite3.connect(db, timeout=5)
+        with wconn:
+            wconn.execute(
+                "UPDATE projection_threads SET deleted_at = ? WHERE thread_id = ?",
+                (ts, sid),
+            )
+        wconn.close()
+        return True
+    except sqlite3.Error:
+        return False
+
+
+def _t3_deleted_entries() -> list[TrashEntry]:
+    rows: list[TrashEntry] = []
+    for db in _t3_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT t.thread_id, t.title, t.deleted_at, COALESCE(p.workspace_root, '') "
+                "FROM projection_threads t "
+                "LEFT JOIN projection_projects p ON p.project_id = t.project_id "
+                "WHERE t.deleted_at IS NOT NULL"
+            )
+            for sid, title, deleted_at, root in cur.fetchall():
+                when = ""
+                try:
+                    dt = datetime.fromisoformat(str(deleted_at).replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.astimezone()
+                    d = datetime.now(timezone.utc) - dt
+                    when = f"{d.days}d ago" if d.days else f"{d.seconds // 3600}h ago"
+                except Exception:
+                    pass
+                rows.append(TrashEntry(
+                    sid=sid, name=title or "", project_id=_win_to_wsl_path(root or ""),
+                    when=when, source=SOURCE_T3,
+                ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return rows
+
+
+def _delete_t3_session(sid: str) -> None:
+    hit = _t3_thread_db(sid)
+    if hit is None:
+        return
+    try:
+        wconn = sqlite3.connect(hit[0], timeout=5)
+        with wconn:
+            wconn.execute(
+                "DELETE FROM projection_thread_messages WHERE thread_id = ?", (sid,)
+            )
+            wconn.execute(
+                "DELETE FROM projection_threads WHERE thread_id = ?", (sid,)
+            )
+        wconn.close()
+    except sqlite3.Error:
+        pass
+
+
+# ── Resume command resolution ─────────────────────────────────────────────
+
+def t3_app_command() -> Optional[list[str]]:
+    """Find the T3 Code desktop app (CLI shim or AppImage)."""
+    for name in ("t3-code", "t3code", "t3"):
+        path = shutil.which(name)
+        if path:
+            return [path]
+    candidates: list[Path] = []
+    for d in (HOME / "Downloads", HOME / "Applications", HOME / ".local" / "bin"):
+        if d.is_dir():
+            candidates.extend(d.glob("T3-Code*.AppImage"))
+            candidates.extend(d.glob("t3-code*.AppImage"))
+    if candidates:
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return [str(newest)]
+    return None
+
+
+def resume_command(sid: str, source: str) -> Optional[list[str]]:
+    """Resolve the command that resumes a session, or None if unavailable."""
+    h = HARNESS_MAP.get(source)
+    if h and h.resume_cmd:
+        cmd = h.build_resume_cmd(sid)
+        if source == SOURCE_CLAUDE:
+            cmd[0] = os.environ.get("CLAUDE_CMD", cmd[0])
+        return cmd
+    if source == SOURCE_T3:
+        return t3_app_command()
+    return None
+
+
+def _search_codex(query: str, use_regex: bool, case_mode: str) -> list[str]:
+    """Codex content search over thread metadata columns (sqlite-side)."""
+    pattern = _compile_search_pattern(query, use_regex, case_mode)
+    sids: list[str] = []
+    for db in _codex_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT id, title, first_user_message, preview FROM threads WHERE archived = 0"
+            )
+            for sid, title, first, preview in cur.fetchall():
+                if sid in sids:
+                    continue
+                if any(pattern.search(v or "") for v in (title, first, preview)):
+                    sids.append(sid)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return sids
+
+
+def _search_t3(query: str, use_regex: bool, case_mode: str) -> list[str]:
+    """T3 content search over thread messages."""
+    pattern = _compile_search_pattern(query, use_regex, case_mode)
+    sids: list[str] = []
+    for db in _t3_dbs():
+        conn = _sqlite_ro(db)
+        if conn is None:
+            continue
+        try:
+            cur = conn.execute(
+                "SELECT DISTINCT thread_id FROM projection_thread_messages "
+                "WHERE role IN ('user','assistant')"
+            )
+            for (tid,) in cur.fetchall():
+                if tid in sids:
+                    continue
+                mc = conn.execute(
+                    "SELECT text FROM projection_thread_messages WHERE thread_id = ?",
+                    (tid,),
+                )
+                if any(pattern.search(t or "") for (t,) in mc.fetchall()):
+                    sids.append(tid)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return sids
 
 
 # ── Opencode project metadata cache ───────────────────────────────────────
@@ -535,21 +1459,33 @@ def list_sessions(
                 mtime_secs=f.stat().st_mtime,
             ))
 
-    # ── OpenClaw ──
-    if (not _hf or _hf == SOURCE_OPENCLAW) and OPENCLAW_SESSIONS_DIR.is_dir():
-        openclaw_names = get_names("openclaw")
-        for f in OPENCLAW_SESSIONS_DIR.glob("*.jsonl"):
-            sid = f.stem
-            last_time, cnt, first = _parse_openclaw_jsonl(str(f))
+    # ── PI ──
+    if (not _hf or _hf == SOURCE_PI) and PI_SESSIONS_DIR.is_dir():
+        pi_names = get_names("pi")
+        for f in PI_SESSIONS_DIR.glob("*/*.jsonl"):
+            sid = _pi_sid_from_path(f)
+            last_time, cnt, first = _parse_pi_jsonl(str(f))
             if not cnt:
                 continue
             age = _compute_age(last_time) if last_time else "?"
             rows.append(Session(
-                sid=sid, name=openclaw_names.get(sid, ""), first_msg=first,
-                age=age, msgs=cnt, project_id="openclaw",
-                sort_time=str(last_time), source=SOURCE_OPENCLAW,
+                sid=sid, name=pi_names.get(sid, ""), first_msg=first,
+                age=age, msgs=cnt, project_id=f.parent.name,
+                sort_time=str(last_time), source=SOURCE_PI,
                 mtime_secs=f.stat().st_mtime,
             ))
+
+    # ── Copilot ──
+    if not _hf or _hf == SOURCE_COPILOT:
+        rows.extend(_list_copilot_sessions(get_names("copilot")))
+
+    # ── Codex ──
+    if not _hf or _hf == SOURCE_CODEX:
+        rows.extend(_list_codex_sessions(get_names("codex")))
+
+    # ── T3 Code ──
+    if not _hf or _hf == SOURCE_T3:
+        rows.extend(_list_t3_sessions(get_names("t3")))
 
     # ── Opencode ──
     sess_base = OPENCODE_STORAGE / "session"
@@ -561,6 +1497,8 @@ def list_sessions(
             proj_hash = proj_dir.name
             for sf in proj_dir.glob("*.json"):
                 sid = sf.stem
+                if _opencode_is_subagent(sf):
+                    continue
                 last_time, cnt, first, title = _parse_opencode_session(sf)
                 if not cnt:
                     continue
@@ -626,7 +1564,11 @@ def list_trash() -> list[TrashEntry]:
             )
         )
     rows.sort(key=lambda r: r[0], reverse=True)
-    return [r[1] for r in rows]
+    out = [r[1] for r in rows]
+    # Sqlite-flagged trash: codex archived threads + t3 deleted threads
+    out.extend(e for e in _codex_archived_entries() if e.sid not in seen)
+    out.extend(e for e in _t3_deleted_entries() if e.sid not in seen)
+    return out
 
 
 # ── Content search ─────────────────────────────────────────────────────────
@@ -650,8 +1592,11 @@ def search_sessions(
         search_paths += [str(b) for b in _all_transcript_dirs()]
         if HERMES_SESSIONS_DIR.is_dir():
             search_paths.append(str(HERMES_SESSIONS_DIR))
-        if OPENCLAW_SESSIONS_DIR.is_dir():
-            search_paths.append(str(OPENCLAW_SESSIONS_DIR))
+        if PI_SESSIONS_DIR.is_dir():
+            search_paths.append(str(PI_SESSIONS_DIR))
+        # Codex: rollout files hold the full conversation content
+        for codex_sessions in _codex_session_dirs():
+            search_paths.append(str(codex_sessions))
         # Opencode: search the parts directory for content
         parts_dir = OPENCODE_STORAGE / "part"
         if parts_dir.is_dir():
@@ -690,13 +1635,12 @@ def search_sessions(
         if str(OPENCODE_STORAGE / "part") in filepath:
             # part file path: .../part/<msgID>/<partID>.json
             msg_id = p.parent.name
-            msg_file = OPENCODE_STORAGE / "message"
             # Find which session owns this message
             oc_sid = _opencode_msg_to_session(msg_id)
             if oc_sid and oc_sid not in seen_sids:
                 seen_sids.add(oc_sid)
                 sf = _find_opencode_session(oc_sid)
-                if sf:
+                if sf and not _opencode_is_subagent(sf):
                     last_time, cnt, first, title = _parse_opencode_session(sf)
                     if cnt:
                         age = _compute_age(last_time) if last_time else "?"
@@ -712,13 +1656,33 @@ def search_sessions(
         if not filepath.endswith(".jsonl"):
             continue
 
-        sid = p.stem
+        # Codex rollout files: map back to the thread via the UUID suffix
+        if any(str(d) in filepath for d in _codex_session_dirs()):
+            cx_sid = p.stem[-36:]
+            if cx_sid in seen_sids:
+                continue
+            seen_sids.add(cx_sid)
+            cx_row = _codex_thread_row(cx_sid)
+            if cx_row:
+                cwd, title, first, updated_at, _ = cx_row
+                cx_names = get_names("codex")
+                iso = _epoch_to_iso(updated_at)
+                rows.append(Session(
+                    sid=cx_sid, name=cx_names.get(cx_sid, "") or (title or ""),
+                    first_msg=(first or "").strip().replace("\n", " ")[:60],
+                    age=_compute_age(iso) if iso else "?",
+                    msgs=_parse_codex_rollout(p), project_id=_win_to_wsl_path(cwd or ""),
+                    sort_time=iso, source=SOURCE_CODEX,
+                ))
+            continue
+
+        source = _detect_source(filepath)
+        sid = _pi_sid_from_path(p) if source == SOURCE_PI else p.stem
         if sid in seen_sids:
             continue
         seen_sids.add(sid)
 
         pid = p.parent.name
-        source = _detect_source(filepath)
         parser = _parser_for_source(source)
         last_time, cnt, first = parser(filepath)
         if not cnt:
@@ -731,6 +1695,21 @@ def search_sessions(
             sort_time=str(last_time), source=source,
         ))
 
+    # Sqlite-backed harnesses are searched separately from ripgrep
+    if all_projects:
+        for hits_fn, list_fn, bucket in (
+            (_search_copilot, _list_copilot_sessions, "copilot"),
+            (_search_codex, _list_codex_sessions, "codex"),
+            (_search_t3, _list_t3_sessions, "t3"),
+        ):
+            hits = set(hits_fn(query, use_regex, case_mode))
+            if not hits:
+                continue
+            for s in list_fn(get_names(bucket)):
+                if s.sid in hits and s.sid not in seen_sids:
+                    seen_sids.add(s.sid)
+                    rows.append(s)
+
     rows.sort(key=lambda r: r.sort_time, reverse=True)
     return rows
 
@@ -739,8 +1718,8 @@ def _detect_source(filepath: str) -> str:
     """Detect session source from file path."""
     if str(HERMES_SESSIONS_DIR) in filepath:
         return SOURCE_HERMES
-    if str(OPENCLAW_SESSIONS_DIR) in filepath:
-        return SOURCE_OPENCLAW
+    if str(PI_SESSIONS_DIR) in filepath:
+        return SOURCE_PI
     return SOURCE_CLAUDE
 
 
@@ -748,8 +1727,8 @@ def _parser_for_source(source: str):
     """Return the appropriate JSONL parser for a source."""
     if source == SOURCE_HERMES:
         return _parse_hermes_jsonl
-    if source == SOURCE_OPENCLAW:
-        return _parse_openclaw_jsonl
+    if source == SOURCE_PI:
+        return _parse_pi_jsonl
     return _parse_claude_jsonl
 
 
@@ -780,6 +1759,21 @@ def preview_session(sid: str) -> str:
     if oc_file:
         return _preview_opencode(sid, oc_file)
 
+    # Copilot (sqlite-based)
+    copilot_row = _copilot_session_row(sid)
+    if copilot_row is not None:
+        return _preview_copilot(sid, copilot_row)
+
+    # Codex (sqlite + rollout JSONL)
+    codex_row = _codex_thread_row(sid)
+    if codex_row is not None:
+        return _preview_codex(sid, codex_row)
+
+    # T3 Code (sqlite-based)
+    t3_hit = _t3_thread_db(sid)
+    if t3_hit is not None:
+        return _preview_t3(sid, t3_hit[0], t3_hit[1])
+
     meta = _read_trash_meta(sid)
     if meta.get("source") == SOURCE_OPENCODE:
         bundle = _trash_opencode_dir(sid)
@@ -791,6 +1785,10 @@ def preview_session(sid: str) -> str:
                 bundle / "message",
                 bundle / "part",
             )
+    if meta.get("source") == SOURCE_COPILOT:
+        bundle_preview = _preview_copilot_bundle(sid)
+        if bundle_preview is not None:
+            return bundle_preview
 
     # JSONL-based sources
     found = _find_session_file(sid)
@@ -798,13 +1796,16 @@ def preview_session(sid: str) -> str:
     if not os.path.exists(filepath):
         return f"*Session not found: {sid}*"
 
-    source = _detect_source(filepath)
+    if found:
+        source = _detect_source(filepath)
+    else:
+        # Trashed files lose their path — trust the trash metadata
+        source = meta.get("source", SOURCE_CLAUDE)
     p = Path(filepath)
-    pid = p.parent.name
+    pid = meta.get("project_id", p.parent.name) if not found else p.parent.name
     names = get_names(_names_bucket_for_source(source, pid))
-    name = names.get(sid, "")
-    raw_path = "/" + pid[1:].replace("-", "/") if pid.startswith("-") else pid
-    short_path = raw_path.replace(str(HOME), "~")
+    name = names.get(sid, "") or meta.get("name", "")
+    short_path = _project_path_for(source, pid)
 
     parts: list[str] = []
     source_badge = f"[{source}]"
@@ -818,11 +1819,46 @@ def preview_session(sid: str) -> str:
 
     if source == SOURCE_HERMES:
         _preview_hermes_body(filepath, parts)
-    elif source == SOURCE_OPENCLAW:
-        _preview_openclaw_body(filepath, parts)
+    elif source == SOURCE_PI:
+        _preview_pi_body(filepath, parts)
     else:
         _preview_claude_body(filepath, parts)
 
+    return "\n".join(parts)
+
+
+def _preview_copilot(sid: str, row: tuple) -> str:
+    """Preview a Copilot session from its sqlite turns."""
+    _, cwd, summary, _ = row
+    names = get_names("copilot")
+    name = names.get(sid, "") or (summary or "")
+    short_path = (cwd or "").replace(str(HOME), "~")
+
+    parts: list[str] = []
+    if name:
+        parts.append(f"## {name}")
+        parts.append(f"`{short_path}` [copilot]")
+    else:
+        parts.append(f"## `{short_path}`")
+        parts.append("[copilot]")
+
+    conn = _copilot_connect()
+    turns = _copilot_turns(conn, sid) if conn else []
+    if conn:
+        conn.close()
+
+    n = 0
+    for user_msg, assistant_msg in turns:
+        if user_msg.strip():
+            parts.append("**You**")
+            parts.append(_quote(user_msg.strip()[:500]))
+            n += 1
+        if assistant_msg.strip():
+            parts.append("**Copilot**")
+            parts.append(assistant_msg.strip()[:2000])
+            n += 1
+    if n == 0:
+        parts.append("*No usable chat messages found.*")
     return "\n".join(parts)
 
 
@@ -897,8 +1933,8 @@ def _preview_hermes_body(filepath: str, parts: list[str]) -> None:
         parts.append("*No usable chat messages found.*")
 
 
-def _preview_openclaw_body(filepath: str, parts: list[str]) -> None:
-    """Append OpenClaw session preview lines."""
+def _preview_pi_body(filepath: str, parts: list[str]) -> None:
+    """Append PI session preview lines."""
     n = 0
     with open(filepath, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
@@ -921,7 +1957,7 @@ def _preview_openclaw_body(filepath: str, parts: list[str]) -> None:
                     parts.append("**You**")
                     parts.append(_quote(t[:500]))
                 else:
-                    parts.append("**Claude**")
+                    parts.append("**Assistant**")
                     parts.append(t[:2000])
                 if n >= _TURN_CAP:
                     break
@@ -1039,8 +2075,8 @@ def _restore_dir_for_source(source: str, pid: str) -> Path:
         return TRANSCRIPTS_DIR
     if source == SOURCE_HERMES:
         return HERMES_SESSIONS_DIR
-    if source == SOURCE_OPENCLAW:
-        return OPENCLAW_SESSIONS_DIR
+    if source == SOURCE_PI:
+        return PI_SESSIONS_DIR / pid
     # Claude Code (and unknown) → project dir
     return PROJECTS_DIR / pid
 
@@ -1115,6 +2151,18 @@ def trash_session(sid: str) -> None:
 
     f = _find_session_file(sid)
     if not f:
+        if _copilot_session_row(sid) is not None:
+            _trash_copilot_session(sid)
+            return
+        if _codex_thread_row(sid) is not None:
+            # Codex's own archived flag IS the trash; custom names survive restore
+            if not _codex_set_archived(sid, True):
+                raise ValueError(f"Could not archive Codex session: {sid}")
+            return
+        if _t3_thread_db(sid) is not None:
+            if not _t3_set_deleted(sid, True):
+                raise ValueError(f"Could not trash T3 session: {sid}")
+            return
         raise ValueError(f"Session not found: {sid}")
     pid = f.parent.name
     source = _detect_source(str(f))
@@ -1141,10 +2189,22 @@ def restore_session(sid: str) -> None:
     pid = meta.get("project_id", "")
     name = meta.get("name", "")
 
+    if not meta:
+        # Sqlite-flagged trash (codex archived / t3 deleted) has no meta file
+        if _codex_set_archived(sid, False):
+            return
+        if _t3_set_deleted(sid, False):
+            return
+
     if source == SOURCE_OPENCODE:
         if not pid:
             raise ValueError(f"Missing project for trashed Opencode session: {sid}")
         _restore_opencode_session(sid, pid, name)
+        _trash_meta_path(sid).unlink(missing_ok=True)
+        return
+
+    if source == SOURCE_COPILOT:
+        _restore_copilot_session(sid, name)
         _trash_meta_path(sid).unlink(missing_ok=True)
         return
 
@@ -1165,27 +2225,32 @@ def restore_session(sid: str) -> None:
         set_name(_names_bucket_for_source(source, pid), sid, name)
 
 
+def delete_trashed(sid: str) -> None:
+    """Permanently delete one trashed session, whatever its harness."""
+    meta = _read_trash_meta(sid)
+    source = meta.get("source", "")
+
+    if source == SOURCE_OPENCODE:
+        shutil.rmtree(_trash_opencode_dir(sid), ignore_errors=True)
+    elif source == SOURCE_COPILOT:
+        _copilot_bundle_path(sid).unlink(missing_ok=True)
+    elif meta:
+        _trash_jsonl_path(sid).unlink(missing_ok=True)
+        shutil.rmtree(TRASH_DIR / sid, ignore_errors=True)
+    else:
+        # No meta file: stray jsonl, codex archived, or t3 deleted
+        stray = _trash_jsonl_path(sid)
+        if stray.exists():
+            stray.unlink(missing_ok=True)
+        elif _codex_thread_row(sid) is not None:
+            _delete_codex_session(sid)
+        elif _t3_thread_db(sid) is not None:
+            _delete_t3_session(sid)
+    _trash_meta_path(sid).unlink(missing_ok=True)
+
+
 def empty_trash() -> int:
-    count = 0
-    seen: set[str] = set()
-
-    for meta in TRASH_DIR.glob("*.meta"):
-        sid = meta.stem
-        seen.add(sid)
-        data = _read_trash_meta(sid)
-        source = data.get("source", SOURCE_CLAUDE)
-        if source == SOURCE_OPENCODE:
-            shutil.rmtree(_trash_opencode_dir(sid), ignore_errors=True)
-        else:
-            _trash_jsonl_path(sid).unlink(missing_ok=True)
-            shutil.rmtree(TRASH_DIR / sid, ignore_errors=True)
-        meta.unlink(missing_ok=True)
-        count += 1
-
-    for f in TRASH_DIR.glob("*.jsonl"):
-        if f.stem in seen:
-            continue
-        f.unlink(missing_ok=True)
-        count += 1
-
-    return count
+    entries = list_trash()
+    for e in entries:
+        delete_trashed(e.sid)
+    return len(entries)

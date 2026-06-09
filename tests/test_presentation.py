@@ -1,4 +1,4 @@
-from claudetree.backend import Session, TrashEntry
+from claudetree.backend import Session
 from claudetree.presentation import (
     CommandSpec,
     filter_commands,

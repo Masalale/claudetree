@@ -373,8 +373,8 @@ class ConfirmDialog(ModalScreen[bool]):
     #dialog {
         width: 56;
         height: auto;
-        border: heavy $warning;
-        background: $panel-darken-1;
+        border: round $warning;
+        background: $surface;
         padding: 1 2;
     }
     #confirm-message {
@@ -395,6 +395,23 @@ class ConfirmDialog(ModalScreen[bool]):
     #confirm-buttons Button {
         margin-left: 2;
         min-width: 12;
+        height: 1;
+        border: none;
+        background: $panel-darken-2;
+        color: $text;
+        text-style: bold;
+    }
+    #confirm-buttons Button:focus {
+        background: $primary 60%;
+        color: $text;
+    }
+    #confirm-buttons Button.-error,
+    #confirm-buttons #confirm-yes {
+        color: $error;
+    }
+    #confirm-buttons #confirm-yes:focus {
+        background: $error 50%;
+        color: $text;
     }
     """
 
@@ -609,25 +626,25 @@ class ContextMenuScreen(ModalScreen[str | None]):
     }
     #ctx-menu {
         width: 24;
-        border: heavy $primary;
-        background: $panel-darken-1;
+        border: round $primary;
+        background: $surface;
         padding: 0;
     }
     #ctx-menu ListView {
         border: none;
         padding: 0;
-        background: $panel-darken-1;
+        background: $surface;
         height: auto;
     }
     #ctx-menu ListItem {
         padding: 0 2;
-        background: $panel-darken-1;
+        background: $surface;
     }
     #ctx-menu ListItem Label {
         width: 100%;
     }
     #ctx-menu ListItem.--highlight {
-        background: $primary 60%;
+        background: $primary 40%;
     }
     """
 
@@ -1776,7 +1793,7 @@ class ContentSearchScreen(Screen[None]):
             with Vertical(id="left"):
                 yield FilterInput(
                     value=self._query,
-                    placeholder="Type a query, then Enter to search. From results: s edits, d trashes.",
+                    placeholder="search session content… Enter runs",
                     id="search",
                 )
                 yield ListView(id="sessions")
@@ -1790,17 +1807,37 @@ class ContentSearchScreen(Screen[None]):
             self._run_search(self._query)
         else:
             self._update_status()
+            self.query_one("#preview", Static).update(RichMarkdown(
+                "## Content search\n\n"
+                "Searches *inside* session conversations across every harness — "
+                "ripgrep over the JSONL stores, native queries for the sqlite ones.\n\n"
+                "- type a query, **Enter** runs it\n"
+                "- `r` toggles regex / literal\n"
+                "- `c` cycles case mode (smart / ignore / match)\n"
+                "- from the results: **Enter** previews, `d` trashes, `s` edits the query\n"
+            ))
         self.query_one("#search", FilterInput).focus()
 
     def _run_search(self, query: str) -> None:
         self._query = query
-        self._sessions = search_sessions(
+        self.query_one("#preview", Static).update(RichMarkdown(f"*Searching for: {query}…*"))
+        self._search_worker(query)
+
+    @work(thread=True, exclusive=True, group="content-search")
+    def _search_worker(self, query: str) -> None:
+        results = search_sessions(
             query,
             cwd=self._cwd,
             all_projects=self._all_projects,
             use_regex=self._regex_mode,
             case_mode=self._case_mode,
         )
+        self.app.call_from_thread(self._apply_search_results, query, results)
+
+    def _apply_search_results(self, query: str, results: list[Session]) -> None:
+        if query != self._query:
+            return  # a newer search superseded this one
+        self._sessions = results
         lv = self.query_one("#sessions", ListView)
         lv.clear()
         lv.extend(SessionItem(s, show_project=self._all_projects) for s in self._sessions)
@@ -1808,7 +1845,9 @@ class ContentSearchScreen(Screen[None]):
             lv.index = 0
             self._load_preview(self._sessions[0].sid)
         else:
-            self.query_one("#preview", Static).update(f"*No results for: {query}*")
+            self.query_one("#preview", Static).update(
+                RichMarkdown(f"*No results for: {query}*")
+            )
         self.app.sub_title = f"search: {query}  ({self._search_mode_label()})"
         self._update_status()
 

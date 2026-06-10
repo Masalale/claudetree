@@ -2202,7 +2202,13 @@ def delete_trashed(sid: str) -> None:
 
 
 def empty_trash() -> int:
-    entries = list_trash()
+    """Permanently delete everything claudetree owns in the trash.
+
+    Codex entries are deliberately skipped: their "trash" is Codex's own
+    archived flag, and archived threads may be kept on purpose. They are
+    only removed via an explicit per-item delete (delete_trashed).
+    """
+    entries = [e for e in list_trash() if e.source != SOURCE_CODEX]
     for e in entries:
         delete_trashed(e.sid)
     return len(entries)

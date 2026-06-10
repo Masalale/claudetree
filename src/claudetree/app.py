@@ -523,128 +523,97 @@ def run_command_palette(app, title: str, commands: list[CommandSpec], dispatch, 
     app.push_screen(CommandPaletteScreen(commands, title, hint), _on_select)
 
 
-# ── Inline context-menu with backdrop ────────────────────────────────────────
+# ── Context menu (positioned modal) ──────────────────────────────────────────
 
 
-class _ContextBackdrop(Static):
-    """Full-screen transparent layer behind the context menu.
+class ContextMenuScreen(ModalScreen[str | None]):
+    """Floating context menu as a modal screen.
 
-    Captures any click outside the menu and hides it — prevents
-    accidental interaction with underlying session items.
+    ModalScreen compositing keeps the underlying screen visible (dimmed);
+    a full-screen widget on a layer would blank the text beneath it.
+    Clicks outside the menu and Escape dismiss with None.
     """
 
     DEFAULT_CSS = """
-    _ContextBackdrop {
-        layer: backdrop;
-        display: none;
-        width: 100%;
-        height: 100%;
-        background: $background 40%;
+    ContextMenuScreen {
+        background: $background 25%;
     }
-    """
-
-    def on_mouse_down(self, event) -> None:
-        # Hide backdrop + menu on click outside
-        self.display = False
-        try:
-            self.screen.query_one(ContextMenuWidget).display = False
-            self.screen.query_one("#sessions", ListView).focus()
-        except Exception:
-            pass
-        event.stop()
-
-
-class _MenuList(ListView):
-    """ListView inside ContextMenuWidget — escape hides the parent menu."""
-
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            parent = self.parent
-            if isinstance(parent, ContextMenuWidget):
-                parent.hide()
-            event.stop()
-
-
-class ContextMenuWidget(Vertical):
-    """Inline floating context menu in the overlay layer.
-
-    No ModalScreen — no screen push/pop, no blank-screen artefacts.
-    Paired with _ContextBackdrop to block clicks on the underlying list.
-    """
-
-    class Chosen(Message):
-        def __init__(self, value: str) -> None:
-            super().__init__()
-            self.value = value
-
-    DEFAULT_CSS = """
-    ContextMenuWidget {
-        layer: overlay;
-        display: none;
-        background: $surface;
-        border: round $primary;
+    #ctx-menu {
         width: 26;
+        border: round $primary;
+        background: $surface;
         padding: 0;
     }
-    ContextMenuWidget ListView {
+    #ctx-menu ListView {
         border: none;
         padding: 0;
         background: $surface;
         height: auto;
     }
-    ContextMenuWidget ListItem {
+    #ctx-menu ListItem {
         padding: 0 1;
     }
-    ContextMenuWidget ListItem.--highlight {
+    #ctx-menu ListItem.--highlight {
         background: $primary 40%;
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, options: list[tuple[str, str]], x: int, y: int) -> None:
         super().__init__()
-        self._options: list[tuple[str, str]] = []
+        self._options = options
+        self._x = x
+        self._y = y
 
     def compose(self) -> ComposeResult:
-        yield _MenuList(id="ctx-list")
+        with Vertical(id="ctx-menu"):
+            yield ListView(
+                *[ListItem(Label(label)) for label, _ in self._options],
+                id="ctx-list",
+            )
 
-    def show(self, options: list[tuple[str, str]], x: int, y: int) -> None:
-        self._options = options
-        lv = self.query_one("#ctx-list", _MenuList)
-        lv.clear()
-        for label, _ in options:
-            lv.append(ListItem(Label(label)))
-        n = len(options)
+    def on_mount(self) -> None:
+        n = len(self._options)
         h = n + 2
-        lv.styles.height = h
-        self.styles.height = h
+        menu = self.query_one("#ctx-menu", Vertical)
+        menu.styles.height = h
         sw, sh = self.app.size.width, self.app.size.height
-        self.styles.offset = (min(x, max(0, sw - 28)), min(y, max(0, sh - h - 2)))
-        # Show backdrop first (behind menu in DOM order)
-        try:
-            self.screen.query_one(_ContextBackdrop).display = True
-        except Exception:
-            pass
-        self.display = True
+        menu.styles.offset = (
+            min(self._x, max(0, sw - 28)),
+            min(self._y, max(0, sh - h - 2)),
+        )
+        lv = self.query_one("#ctx-list", ListView)
         lv.index = 0
         lv.focus()
 
-    def hide(self) -> None:
-        self.display = False
-        try:
-            self.screen.query_one(_ContextBackdrop).display = False
-        except Exception:
-            pass
-        try:
-            self.screen.query_one("#sessions", ListView).focus()
-        except Exception:
-            pass
+    def on_key(self, event) -> None:
+        if event.key == "escape":
+            event.stop()
+            self.dismiss(None)
+
+    def on_mouse_down(self, event) -> None:
+        # Click outside the menu dismisses without acting on what's beneath
+        menu = self.query_one("#ctx-menu", Vertical)
+        if not menu.region.contains(event.screen_x, event.screen_y):
+            event.stop()
+            self.dismiss(None)
 
     @on(ListView.Selected, "#ctx-list")
     def _item_selected(self, event: ListView.Selected) -> None:
         idx = self.query_one("#ctx-list", ListView).index
-        self.hide()
         if idx is not None and 0 <= idx < len(self._options):
-            self.post_message(self.Chosen(self._options[idx][1]))
+            self.dismiss(self._options[idx][1])
+        else:
+            self.dismiss(None)
+
+
+def show_context_menu(screen: Screen, options: list[tuple[str, str]], x: int, y: int, on_choice) -> None:
+    """Open the context menu; call on_choice(value) if an option is picked."""
+
+    def _done(value: str | None) -> None:
+        if value:
+            on_choice(value)
+
+    screen.app.push_screen(ContextMenuScreen(options, x, y), _done)
 
 
 # ── Session preview + confirmation screen ────────────────────────────────────
@@ -1128,9 +1097,6 @@ class BrowseScreen(Screen[None]):
     DEFAULT_CSS = (
         _SPLIT_CSS
         + """
-    BrowseScreen {
-        layers: base backdrop overlay;
-    }
     #status-strip {
         height: 1;
         padding: 0 1;
@@ -1192,7 +1158,6 @@ class BrowseScreen(Screen[None]):
         self._hint_timer: Optional[Timer] = None
         self._hint_idx: int = 0
         self._sort: str = "folder_asc"
-        self._ctx_session: Optional[Session] = None
         self._harness_filter: Optional[str] = None  # None = All harnesses
         self._rail_collapsed: bool = False
         self._loaded: bool = False
@@ -1212,8 +1177,6 @@ class BrowseScreen(Screen[None]):
             with VerticalScroll(id="preview-scroll"):
                 yield Static("", id="preview")
         yield Footer()
-        yield _ContextBackdrop()
-        yield ContextMenuWidget()
 
     def on_mount(self) -> None:
         self._update_subtitle()
@@ -1526,7 +1489,6 @@ class BrowseScreen(Screen[None]):
         return options
 
     def _show_session_menu(self, session: Session, x: int | None = None, y: int | None = None) -> None:
-        self._ctx_session = session
         if x is None or y is None:
             lv = self.query_one("#sessions", ListView)
             item = lv.highlighted_child
@@ -1536,10 +1498,12 @@ class BrowseScreen(Screen[None]):
             else:
                 x = self.app.size.width // 2 - 10
                 y = self.app.size.height // 2 - 2
-        self.query_one(ContextMenuWidget).show(
+        show_context_menu(
+            self,
             self._session_menu_options(session),
             x,
             y,
+            lambda value: self._handle_menu_choice(session, value),
         )
 
     def action_open_session_menu(self) -> None:
@@ -1613,14 +1577,10 @@ class BrowseScreen(Screen[None]):
     def _session_right_clicked(self, event: SessionItem.RightClicked) -> None:
         self._show_session_menu(event.session, event.x, event.y)
 
-    @on(ContextMenuWidget.Chosen)
-    def _ctx_chosen(self, event: ContextMenuWidget.Chosen) -> None:
-        s = self._ctx_session
-        if not s:
-            return
-        if event.value == "resume":
+    def _handle_menu_choice(self, s: Session, value: str) -> None:
+        if value == "resume":
             self.app.push_screen(SessionPreviewScreen(s))
-        elif event.value == "rename":
+        elif value == "rename":
 
             def on_rename(new_name: Optional[str]) -> None:
                 if new_name:
@@ -1631,7 +1591,7 @@ class BrowseScreen(Screen[None]):
                         self.notify(f"Renamed: {new_name}", timeout=2)
 
             self.app.push_screen(InputDialog("New name:", initial=s.name), on_rename)
-        elif event.value == "trash":
+        elif value == "trash":
             if not _guard_trashable_session(self, s):
                 return
             try:
@@ -1668,9 +1628,6 @@ class ContentSearchScreen(Screen[None]):
     DEFAULT_CSS = (
         _SPLIT_CSS
         + """
-    ContentSearchScreen {
-        layers: base backdrop overlay;
-    }
     ContentSearchScreen #search {
         height: 3;
         border: tall $primary 40%;
@@ -1699,7 +1656,6 @@ class ContentSearchScreen(Screen[None]):
         self._cwd = cwd or os.getcwd()
         self._sessions: list[Session] = []
         self._preview_timer: Optional[Timer] = None
-        self._ctx_session: Optional[Session] = None
         self._regex_mode: bool = True
         self._case_modes = ["smart", "ignore", "match"]
         self._case_mode_idx: int = 0
@@ -1744,8 +1700,6 @@ class ContentSearchScreen(Screen[None]):
             with VerticalScroll(id="preview-scroll"):
                 yield Static("", id="preview")
         yield Footer()
-        yield _ContextBackdrop()
-        yield ContextMenuWidget()
 
     def on_mount(self) -> None:
         self.app.sub_title = f"search: {self._query}"
@@ -1884,20 +1838,19 @@ class ContentSearchScreen(Screen[None]):
 
     @on(SessionItem.RightClicked)
     def _session_right_clicked(self, event: SessionItem.RightClicked) -> None:
-        self._ctx_session = event.session
+        s = event.session
         options = [("Resume", "resume")]
-        if _session_supports_trash(event.session):
+        if _session_supports_trash(s):
             options.append(("Trash", "trash"))
-        self.query_one(ContextMenuWidget).show(options, event.x, event.y)
+        show_context_menu(
+            self, options, event.x, event.y,
+            lambda value: self._handle_menu_choice(s, value),
+        )
 
-    @on(ContextMenuWidget.Chosen)
-    def _ctx_chosen(self, event: ContextMenuWidget.Chosen) -> None:
-        s = self._ctx_session
-        if not s:
-            return
-        if event.value == "resume":
+    def _handle_menu_choice(self, s: Session, value: str) -> None:
+        if value == "resume":
             self.app.push_screen(SessionPreviewScreen(s, search_term=self._query))
-        elif event.value == "trash":
+        elif value == "trash":
             if not _guard_trashable_session(self, s):
                 return
             lv = self.query_one("#sessions", ListView)
@@ -1935,9 +1888,6 @@ class TrashScreen(Screen[None]):
     DEFAULT_CSS = (
         _SPLIT_CSS
         + """
-    TrashScreen {
-        layers: base backdrop overlay;
-    }
     #filter-bar {
         height: 3;
         border-top: solid $panel-darken-1;
@@ -1959,7 +1909,6 @@ class TrashScreen(Screen[None]):
         self._all_entries: list[TrashEntry] = []
         self._entries: list[TrashEntry] = []
         self._preview_timer: Optional[Timer] = None
-        self._ctx_entry: Optional[TrashEntry] = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
@@ -1973,8 +1922,6 @@ class TrashScreen(Screen[None]):
             with VerticalScroll(id="preview-scroll"):
                 yield Static("", id="preview")
         yield Footer()
-        yield _ContextBackdrop()
-        yield ContextMenuWidget()
 
     def on_mount(self) -> None:
         self.app.sub_title = "trash"
@@ -2141,8 +2088,9 @@ class TrashScreen(Screen[None]):
 
     @on(TrashItem.RightClicked)
     def _trash_right_clicked(self, event: TrashItem.RightClicked) -> None:
-        self._ctx_entry = event.entry
-        self.query_one(ContextMenuWidget).show(
+        entry = event.entry
+        show_context_menu(
+            self,
             [
                 ("Restore", "restore"),
                 ("Delete forever", "delete"),
@@ -2150,18 +2098,15 @@ class TrashScreen(Screen[None]):
             ],
             event.x,
             event.y,
+            lambda value: self._handle_menu_choice(entry, value),
         )
 
-    @on(ContextMenuWidget.Chosen)
-    def _ctx_chosen(self, event: ContextMenuWidget.Chosen) -> None:
-        e = self._ctx_entry
-        if not e:
-            return
-        if event.value == "restore":
+    def _handle_menu_choice(self, e: TrashEntry, value: str) -> None:
+        if value == "restore":
             self._do_restore(e)
-        elif event.value == "delete":
+        elif value == "delete":
             self._do_delete(e)
-        elif event.value == "empty":
+        elif value == "empty":
             self.action_empty_all()
 
 
@@ -2171,13 +2116,21 @@ class TrashScreen(Screen[None]):
 class ClaudetreeApp(App[tuple[str, str] | tuple[str] | None]):
     TITLE = "claudetree"
     CSS = """
-    /* NOTE: do NOT set 'layers' on Screen globally — it breaks Screen.render()
-       in Textual 8.x. Each screen that uses ContextMenuWidget declares its own
-       'layers: base backdrop overlay' in its DEFAULT_CSS.
-       backdrop < overlay ensures the dim layer never covers the menu. */
-
     Screen {
         background: $surface;
+    }
+    /* Modal screens need translucent backgrounds so the screen beneath
+       stays visible. The opaque Screen rule above would otherwise override
+       their DEFAULT_CSS (app CSS wins at equal specificity) and blank the
+       UI behind menus and dialogs. */
+    ContextMenuScreen {
+        background: $background 25%;
+    }
+    InputDialog, ConfirmDialog {
+        background: $background 70%;
+    }
+    CommandPaletteScreen {
+        background: $background 78%;
     }
     Header {
         background: $primary-darken-2;

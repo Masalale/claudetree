@@ -43,12 +43,13 @@ claudetree
 
 **Full parity everywhere**: every harness supports list, preview, fuzzy filter, content search, rename, trash, restore, and delete-forever. Resume uses each harness's native command, and claudetree `cd`s into the session's original project directory before exec-ing.
 
-**Main sessions only** — subagent/sidechain sessions (Opencode Task children, Claude Code subagent transcripts) are hidden, matching each harness's own resume picker.
+**Main sessions only** — subagent/sidechain sessions are hidden, matching each harness's own resume picker: Opencode Task children (`parentID`), Claude Code subagent transcripts, and non-UUID files in Claude dirs (e.g. `ses_*` transcript dumps imported from other tools, which `claude --resume` cannot open).
 
 **WSL aware** — on WSL, Windows-side stores under `/mnt/*/Users/*/` (`.claude`, `.codex`) are scanned too, with Windows paths translated to their WSL equivalents.
 
 ## Features
 
+- **Instant startup** — the previous scan's results paint immediately; a background rescan refreshes them. Session files are parsed once and cached by mtime (`~/.cache/claudetree/`), so rescans cost stat calls, not full reads
 - **Harness rail** — filter sessions by tool with a click, the palette, or keys `1`-`7` (instant, no rescan)
 - **Split-pane browser** — sessions on the left, live markdown preview on the right
 - **Fuzzy filter** — `/` filter does fzf-style subsequence matching (`dckr` finds `docker debugging`)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -13,6 +14,98 @@ from pathlib import Path
 from typing import Optional
 
 HOME = Path.home()
+
+# Claude Code session ids are UUIDs; anything else in its dirs (e.g. ses_*
+# transcript dumps imported from other tools) is not resumable and is noise.
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+# ── Parse cache ─────────────────────────────────────────────────────────────
+# Session files are parsed once and reused until their mtime changes, so a
+# rescan costs stat() calls instead of reading every conversation in full.
+
+CACHE_FILE = HOME / ".cache" / "claudetree" / "scan-cache.json"
+
+_scan_cache: Optional[dict] = None
+_scan_cache_dirty = False
+
+
+def _cache_data() -> dict:
+    global _scan_cache
+    if _scan_cache is None:
+        try:
+            _scan_cache = json.loads(CACHE_FILE.read_text())
+        except Exception:
+            _scan_cache = {}
+    return _scan_cache
+
+
+def _cache_get(key: str, mtime: float):
+    ent = _cache_data().get(key)
+    if ent is not None and ent.get("m") == mtime:
+        return ent.get("v")
+    return None
+
+
+def _cache_put(key: str, mtime: float, value) -> None:
+    global _scan_cache_dirty
+    _cache_data()[key] = {"m": mtime, "v": value}
+    _scan_cache_dirty = True
+
+
+def _cache_save() -> None:
+    global _scan_cache_dirty
+    if not _scan_cache_dirty:
+        return
+    try:
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_scan_cache))
+        tmp.replace(CACHE_FILE)
+        _scan_cache_dirty = False
+    except OSError:
+        pass
+
+
+def _parse_jsonl_cached(kind: str, path: Path, parser):
+    """Run a (last_time, cnt, first) jsonl parser through the mtime cache."""
+    mtime = path.stat().st_mtime
+    key = f"{kind}:{path}"
+    cached = _cache_get(key, mtime)
+    if cached is None:
+        cached = list(parser(str(path)))
+        _cache_put(key, mtime, cached)
+    return cached
+
+
+def last_scan_rows() -> list["Session"]:
+    """Sessions from the previous full scan — instant, possibly stale.
+
+    Lets the UI paint immediately while a fresh scan runs in the background.
+    Ages are recomputed so they don't show last scan's values.
+    """
+    ent = _cache_data().get("_last")
+    if not isinstance(ent, list):
+        return []
+    rows: list[Session] = []
+    for d in ent:
+        try:
+            sess = Session(**d)
+        except TypeError:
+            return []  # stale snapshot schema — ignore entirely
+        if sess.sort_time:
+            sess.age = _compute_age(sess.sort_time)
+        rows.append(sess)
+    return rows
+
+
+def _store_scan_snapshot(rows: list["Session"]) -> None:
+    global _scan_cache_dirty
+    _cache_data()["_last"] = [s.__dict__ for s in rows]
+    _scan_cache_dirty = True
+
 
 # ── Directory constants ────────────────────────────────────────────────────
 
@@ -902,7 +995,15 @@ def _list_codex_sessions(names: dict[str, str]) -> list[Session]:
                     continue
                 seen.add(sid)
                 rollout_file = Path(_win_to_wsl_path(rollout or ""))
-                cnt = _parse_codex_rollout(rollout_file) if rollout_file.is_file() else 0
+                cnt = 0
+                if rollout_file.is_file():
+                    r_mtime = rollout_file.stat().st_mtime
+                    key = f"codex:{rollout_file}"
+                    cached = _cache_get(key, r_mtime)
+                    if cached is None:
+                        cached = _parse_codex_rollout(rollout_file)
+                        _cache_put(key, r_mtime, cached)
+                    cnt = cached
                 if not cnt and not (first or "").strip():
                     continue
                 iso = _epoch_to_iso(updated_at)
@@ -1168,7 +1269,12 @@ def list_sessions(
                 names = get_names(pid)
                 for f in pd.glob("*.jsonl"):
                     sid = f.stem
-                    last_time, cnt, first = _parse_claude_jsonl(str(f))
+                    if not _UUID_RE.match(sid):
+                        continue
+                    mtime = f.stat().st_mtime
+                    last_time, cnt, first = _parse_jsonl_cached(
+                        "claude", f, _parse_claude_jsonl
+                    )
                     if not cnt:
                         continue
                     age = _compute_age(last_time) if last_time else "?"
@@ -1176,7 +1282,7 @@ def list_sessions(
                         sid=sid, name=names.get(sid, ""), first_msg=first,
                         age=age, msgs=cnt, project_id=pid,
                         sort_time=str(last_time), source=SOURCE_CLAUDE,
-                        mtime_secs=f.stat().st_mtime,
+                        mtime_secs=mtime,
                     ))
 
         # ── Claude Code transcripts ──
@@ -1184,7 +1290,12 @@ def list_sessions(
         for base in _all_transcript_dirs():
             for f in base.glob("*.jsonl"):
                 sid = f.stem
-                last_time, cnt, first = _parse_claude_jsonl(str(f))
+                if not _UUID_RE.match(sid):
+                    continue
+                mtime = f.stat().st_mtime
+                last_time, cnt, first = _parse_jsonl_cached(
+                    "claude", f, _parse_claude_jsonl
+                )
                 if not cnt:
                     continue
                 age = _compute_age(last_time) if last_time else "?"
@@ -1192,7 +1303,7 @@ def list_sessions(
                     sid=sid, name=transcript_names.get(sid, ""), first_msg=first,
                     age=age, msgs=cnt, project_id="transcripts",
                     sort_time=str(last_time), source=SOURCE_CLAUDE,
-                    mtime_secs=f.stat().st_mtime,
+                    mtime_secs=mtime,
                 ))
 
     # ── Hermes ──
@@ -1200,7 +1311,9 @@ def list_sessions(
         hermes_names = get_names("hermes")
         for f in HERMES_SESSIONS_DIR.glob("*.jsonl"):
             sid = f.stem
-            last_time, cnt, first = _parse_hermes_jsonl(str(f))
+            last_time, cnt, first = _parse_jsonl_cached(
+                "hermes", f, _parse_hermes_jsonl
+            )
             if not cnt:
                 continue
             age = _compute_age(last_time) if last_time else "?"
@@ -1216,7 +1329,9 @@ def list_sessions(
         pi_names = get_names("pi")
         for f in PI_SESSIONS_DIR.glob("*/*.jsonl"):
             sid = _pi_sid_from_path(f)
-            last_time, cnt, first = _parse_pi_jsonl(str(f))
+            last_time, cnt, first = _parse_jsonl_cached(
+                "pi", f, _parse_pi_jsonl
+            )
             if not cnt:
                 continue
             age = _compute_age(last_time) if last_time else "?"
@@ -1245,10 +1360,19 @@ def list_sessions(
             proj_hash = proj_dir.name
             for sf in proj_dir.glob("*.json"):
                 sid = sf.stem
-                if _opencode_is_subagent(sf):
-                    continue
-                last_time, cnt, first, title = _parse_opencode_session(sf)
-                if not cnt:
+                mtime = sf.stat().st_mtime
+                msg_dir = OPENCODE_STORAGE / "message" / sid
+                if msg_dir.is_dir():
+                    mtime = max(mtime, msg_dir.stat().st_mtime)
+                cached = _cache_get(f"opencode:{sf}", mtime)
+                if cached is None:
+                    if _opencode_is_subagent(sf):
+                        cached = [True, "", 0, "", ""]
+                    else:
+                        cached = [False, *_parse_opencode_session(sf)]
+                    _cache_put(f"opencode:{sf}", mtime, cached)
+                is_child, last_time, cnt, first, title = cached
+                if is_child or not cnt:
                     continue
                 age = _compute_age(last_time) if last_time else "?"
                 display_name = opencode_names.get(sid, "") or title
@@ -1256,10 +1380,13 @@ def list_sessions(
                     sid=sid, name=display_name, first_msg=first,
                     age=age, msgs=cnt, project_id=proj_hash,
                     sort_time=str(last_time), source=SOURCE_OPENCODE,
-                    mtime_secs=sf.stat().st_mtime,
+                    mtime_secs=mtime,
                 ))
 
     rows.sort(key=lambda r: r.sort_time, reverse=True)
+    if all_projects and not harness_filter:
+        _store_scan_snapshot(rows)
+    _cache_save()
     return rows
 
 
@@ -1425,6 +1552,8 @@ def search_sessions(
 
         source = _detect_source(filepath)
         sid = _pi_sid_from_path(p) if source == SOURCE_PI else p.stem
+        if source == SOURCE_CLAUDE and not _UUID_RE.match(sid):
+            continue
         if sid in seen_sids:
             continue
         seen_sids.add(sid)

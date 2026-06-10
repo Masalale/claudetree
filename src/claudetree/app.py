@@ -26,6 +26,7 @@ from .backend import (
     TrashEntry,
     delete_trashed,
     empty_trash,
+    last_scan_rows,
     list_sessions,
     list_trash,
     pid_to_path,
@@ -1182,7 +1183,12 @@ class BrowseScreen(Screen[None]):
         self._update_subtitle()
         self._update_status()
         self._populate_rail()
-        self.query_one("#preview", Static).update(RichMarkdown("*Scanning sessions…*"))
+        # Paint the previous scan's results instantly; refresh in background
+        snapshot = last_scan_rows() if self._all_projects else []
+        if snapshot:
+            self._apply_sessions(snapshot)
+        else:
+            self.query_one("#preview", Static).update(RichMarkdown("*Scanning sessions…*"))
         self._load()
         self.query_one("#sessions", ListView).focus()
         self._hint_timer = self.set_interval(4, self._rotate_hint)
@@ -1316,8 +1322,7 @@ class BrowseScreen(Screen[None]):
 
         lv = self.query_one("#sessions", ListView)
         lv.clear()
-        for s in self._filtered:
-            lv.append(SessionItem(s, show_project=self._all_projects))
+        lv.extend(SessionItem(s, show_project=self._all_projects) for s in self._filtered)
         if self._filtered:
             idx = 0
             if self._restore_index is not None:
@@ -1720,8 +1725,7 @@ class ContentSearchScreen(Screen[None]):
         )
         lv = self.query_one("#sessions", ListView)
         lv.clear()
-        for s in self._sessions:
-            lv.append(SessionItem(s, show_project=self._all_projects))
+        lv.extend(SessionItem(s, show_project=self._all_projects) for s in self._sessions)
         if self._sessions:
             lv.index = 0
             self._load_preview(self._sessions[0].sid)
@@ -1956,8 +1960,7 @@ class TrashScreen(Screen[None]):
 
         lv = self.query_one("#sessions", ListView)
         lv.clear()
-        for entry in self._entries:
-            lv.append(TrashItem(entry))
+        lv.extend(TrashItem(entry) for entry in self._entries)
         if self._entries:
             lv.index = 0
             self._load_preview(self._entries[0].sid)

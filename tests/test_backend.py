@@ -349,3 +349,59 @@ def test_fuzzy_match():
     assert fuzzy_match("docker dbg", "docker debugging ~/dock")  # multi-word
     assert not fuzzy_match("zzz", "docker debugging")
     assert fuzzy_match("", "anything")
+
+
+def test_non_uuid_claude_files_hidden(tmp_path, monkeypatch):
+    """ses_* transcript dumps and other non-UUID files are not Claude sessions."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    proj = tmp_path / ".claude" / "projects" / "-home-u-x"
+    proj.mkdir(parents=True)
+    line = '{"type":"user","timestamp":"2026-06-01T00:00:00Z","message":{"content":"hi"}}\n'
+    (proj / "0fe52dbf-c29e-40e2-ac45-78158f56d0f4.jsonl").write_text(line)
+    (proj / "ses_abc123fffe.jsonl").write_text(line)
+    tr = tmp_path / ".claude" / "transcripts"
+    tr.mkdir(parents=True)
+    (tr / "ses_def456fffe.jsonl").write_text(line)
+
+    backend = _load_backend_with_home(tmp_path)
+    monkeypatch.setattr(backend, "_all_project_dirs", lambda: [backend.PROJECTS_DIR])
+    monkeypatch.setattr(backend, "_all_transcript_dirs", lambda: [backend.TRANSCRIPTS_DIR])
+
+    rows = [s for s in backend.list_sessions(all_projects=True) if s.source == "claude"]
+    assert [s.sid for s in rows] == ["0fe52dbf-c29e-40e2-ac45-78158f56d0f4"]
+
+
+def test_scan_cache_and_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    proj = tmp_path / ".claude" / "projects" / "-home-u-x"
+    proj.mkdir(parents=True)
+    sid = "0fe52dbf-c29e-40e2-ac45-78158f56d0f4"
+    f = proj / f"{sid}.jsonl"
+    f.write_text('{"type":"user","timestamp":"2026-06-01T00:00:00Z","message":{"content":"hello"}}\n')
+
+    backend = _load_backend_with_home(tmp_path)
+    monkeypatch.setattr(backend, "_all_project_dirs", lambda: [backend.PROJECTS_DIR])
+    monkeypatch.setattr(backend, "_all_transcript_dirs", lambda: [backend.TRANSCRIPTS_DIR])
+
+    rows = backend.list_sessions(all_projects=True)
+    assert len(rows) == 1
+    assert backend.CACHE_FILE.exists()
+
+    # Snapshot replays without touching session files
+    snap = backend.last_scan_rows()
+    assert [s.sid for s in snap] == [sid]
+
+    # Cache hit: parser not called again for unchanged file
+    calls = []
+    real = backend._parse_claude_jsonl
+    monkeypatch.setattr(backend, "_parse_claude_jsonl", lambda fp: calls.append(fp) or real(fp))
+    backend.list_sessions(all_projects=True)
+    assert calls == []
+
+    # mtime bump invalidates
+    import os as _os
+    _os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 10))
+    backend.list_sessions(all_projects=True)
+    assert len(calls) == 1

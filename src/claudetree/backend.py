@@ -337,20 +337,41 @@ def rm_name(project_id: str, sid: str) -> None:
 
 # ── File finding ───────────────────────────────────────────────────────────
 
+# In-process indexes: avoid re-globbing every directory on each preview.
+_session_path_index: dict[str, str] = {}
+_opencode_path_index: dict[str, str] = {}
+
+
+def _index_session_path(sid: str, path: Path) -> None:
+    _session_path_index[sid] = str(path)
+
+
 def _find_session_file(sid: str) -> Optional[Path]:
     """Find a JSONL session file across all sources (not Opencode/Copilot)."""
+    hit = _session_path_index.get(sid)
+    if hit:
+        p = Path(hit)
+        if p.is_file():
+            return p
+        del _session_path_index[sid]
     for base in _all_project_dirs():
         for f in base.glob(f"*/{sid}.jsonl"):
+            _index_session_path(sid, f)
             return f
     for base in _all_transcript_dirs():
         f = base / f"{sid}.jsonl"
         if f.exists():
+            _index_session_path(sid, f)
             return f
     if HERMES_SESSIONS_DIR.is_dir():
         f = HERMES_SESSIONS_DIR / f"{sid}.jsonl"
         if f.exists():
+            _index_session_path(sid, f)
             return f
-    return _find_pi_session(sid)
+    found = _find_pi_session(sid)
+    if found:
+        _index_session_path(sid, found)
+    return found
 
 
 def _find_pi_session(sid: str) -> Optional[Path]:
@@ -370,6 +391,12 @@ def _pi_sid_from_path(p: Path) -> str:
 
 def _find_opencode_session(sid: str) -> Optional[Path]:
     """Find an Opencode session JSON file."""
+    hit = _opencode_path_index.get(sid)
+    if hit:
+        p = Path(hit)
+        if p.is_file():
+            return p
+        del _opencode_path_index[sid]
     sess_dir = OPENCODE_STORAGE / "session"
     if not sess_dir.is_dir():
         return None
@@ -378,6 +405,7 @@ def _find_opencode_session(sid: str) -> Optional[Path]:
             continue
         f = proj_dir / f"{sid}.json"
         if f.exists():
+            _opencode_path_index[sid] = str(f)
             return f
     return None
 
@@ -1021,7 +1049,7 @@ def _list_codex_sessions(names: dict[str, str]) -> list[Session]:
     return rows
 
 
-def _preview_codex(sid: str, row: tuple) -> str:
+def _preview_codex(sid: str, row: tuple, max_turns: Optional[int] = None) -> str:
     cwd, title, first, _, rollout = row
     names = get_names("codex")
     name = names.get(sid, "") or (title or "")
@@ -1064,6 +1092,9 @@ def _preview_codex(sid: str, row: tuple) -> str:
                         else:
                             parts.append("**Codex**")
                             parts.append(text[:2000])
+                        if n >= (max_turns or 999999):
+                            parts.append(_TRUNCATION_NOTE)
+                            break
                     except Exception:
                         pass
         except OSError:
@@ -1271,6 +1302,7 @@ def list_sessions(
                     sid = f.stem
                     if not _UUID_RE.match(sid):
                         continue
+                    _index_session_path(sid, f)
                     mtime = f.stat().st_mtime
                     last_time, cnt, first = _parse_jsonl_cached(
                         "claude", f, _parse_claude_jsonl
@@ -1292,6 +1324,7 @@ def list_sessions(
                 sid = f.stem
                 if not _UUID_RE.match(sid):
                     continue
+                _index_session_path(sid, f)
                 mtime = f.stat().st_mtime
                 last_time, cnt, first = _parse_jsonl_cached(
                     "claude", f, _parse_claude_jsonl
@@ -1311,6 +1344,7 @@ def list_sessions(
         hermes_names = get_names("hermes")
         for f in HERMES_SESSIONS_DIR.glob("*.jsonl"):
             sid = f.stem
+            _index_session_path(sid, f)
             last_time, cnt, first = _parse_jsonl_cached(
                 "hermes", f, _parse_hermes_jsonl
             )
@@ -1329,6 +1363,7 @@ def list_sessions(
         pi_names = get_names("pi")
         for f in PI_SESSIONS_DIR.glob("*/*.jsonl"):
             sid = _pi_sid_from_path(f)
+            _index_session_path(sid, f)
             last_time, cnt, first = _parse_jsonl_cached(
                 "pi", f, _parse_pi_jsonl
             )
@@ -1360,6 +1395,7 @@ def list_sessions(
             proj_hash = proj_dir.name
             for sf in proj_dir.glob("*.json"):
                 sid = sf.stem
+                _opencode_path_index[sid] = str(sf)
                 mtime = sf.stat().st_mtime
                 msg_dir = OPENCODE_STORAGE / "message" / sid
                 if msg_dir.is_dir():
@@ -1624,25 +1660,47 @@ def _opencode_msg_to_session(msg_id: str) -> Optional[str]:
 
 # ── Preview ────────────────────────────────────────────────────────────────
 
-_TURN_CAP = 999999
+# Rendered-preview cache: (sid, max_turns) → (version, text). Version is the
+# source file's mtime (or a db timestamp), so edits invalidate automatically.
+_preview_cache: dict[tuple[str, Optional[int]], tuple[float, str]] = {}
+
+_TRUNCATION_NOTE = "\n\n*… preview truncated — open the session for the full transcript.*"
 
 
-def preview_session(sid: str) -> str:
-    """Return a markdown-formatted preview of the session."""
+def preview_session(sid: str, max_turns: Optional[int] = None) -> str:
+    """Return a markdown-formatted preview of the session.
+
+    max_turns limits how many chat messages are rendered (None = all) —
+    the browse pane uses a small cap so scrolling stays instant.
+    """
+    # Fast path: session already located during listing — skip all probes
+    hit = _session_path_index.get(sid)
+    if hit and os.path.exists(hit):
+        return _preview_jsonl_file(sid, Path(hit), max_turns)
+
     # Try Opencode first (JSON-based, not JSONL)
     oc_file = _find_opencode_session(sid)
     if oc_file:
-        return _preview_opencode(sid, oc_file)
+        version = oc_file.stat().st_mtime
+        msg_dir = OPENCODE_STORAGE / "message" / sid
+        if msg_dir.is_dir():
+            version = max(version, msg_dir.stat().st_mtime)
+        cached = _preview_cache.get((sid, max_turns))
+        if cached and cached[0] == version:
+            return cached[1]
+        text = _preview_opencode(sid, oc_file, max_turns)
+        _preview_cache[(sid, max_turns)] = (version, text)
+        return text
 
     # Copilot (sqlite-based)
     copilot_row = _copilot_session_row(sid)
     if copilot_row is not None:
-        return _preview_copilot(sid, copilot_row)
+        return _preview_copilot(sid, copilot_row, max_turns)
 
     # Codex (sqlite + rollout JSONL)
     codex_row = _codex_thread_row(sid)
     if codex_row is not None:
-        return _preview_codex(sid, codex_row)
+        return _preview_codex(sid, codex_row, max_turns)
 
     meta = _read_trash_meta(sid)
     if meta.get("source") == SOURCE_OPENCODE:
@@ -1662,19 +1720,41 @@ def preview_session(sid: str) -> str:
 
     # JSONL-based sources
     found = _find_session_file(sid)
-    filepath = str(found) if found else str(_trash_jsonl_path(sid))
-    if not os.path.exists(filepath):
-        return f"*Session not found: {sid}*"
-
     if found:
+        return _preview_jsonl_file(sid, found, max_turns)
+    trashed = _trash_jsonl_path(sid)
+    if not trashed.exists():
+        return f"*Session not found: {sid}*"
+    return _preview_jsonl_file(sid, trashed, max_turns, meta=meta)
+
+
+def _preview_jsonl_file(
+    sid: str,
+    p: Path,
+    max_turns: Optional[int],
+    meta: Optional[dict] = None,
+) -> str:
+    """Render (with caching) a preview for a JSONL session file.
+
+    meta is the trash metadata for trashed files, whose path no longer
+    reveals their source or project.
+    """
+    filepath = str(p)
+    version = p.stat().st_mtime
+    cached = _preview_cache.get((sid, max_turns))
+    if cached and cached[0] == version:
+        return cached[1]
+
+    if meta is None:
         source = _detect_source(filepath)
+        pid = p.parent.name
+        name_fallback = ""
     else:
-        # Trashed files lose their path — trust the trash metadata
         source = meta.get("source", SOURCE_CLAUDE)
-    p = Path(filepath)
-    pid = meta.get("project_id", p.parent.name) if not found else p.parent.name
+        pid = meta.get("project_id", p.parent.name)
+        name_fallback = meta.get("name", "")
     names = get_names(_names_bucket_for_source(source, pid))
-    name = names.get(sid, "") or meta.get("name", "")
+    name = names.get(sid, "") or name_fallback
     short_path = _project_path_for(source, pid)
 
     parts: list[str] = []
@@ -1688,16 +1768,18 @@ def preview_session(sid: str) -> str:
         parts.append(source_badge)
 
     if source == SOURCE_HERMES:
-        _preview_hermes_body(filepath, parts)
+        _preview_hermes_body(filepath, parts, max_turns)
     elif source == SOURCE_PI:
-        _preview_pi_body(filepath, parts)
+        _preview_pi_body(filepath, parts, max_turns)
     else:
-        _preview_claude_body(filepath, parts)
+        _preview_claude_body(filepath, parts, max_turns)
 
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    _preview_cache[(sid, max_turns)] = (version, text)
+    return text
 
 
-def _preview_copilot(sid: str, row: tuple) -> str:
+def _preview_copilot(sid: str, row: tuple, max_turns: Optional[int] = None) -> str:
     """Preview a Copilot session from its sqlite turns."""
     _, cwd, summary, _ = row
     names = get_names("copilot")
@@ -1732,8 +1814,9 @@ def _preview_copilot(sid: str, row: tuple) -> str:
     return "\n".join(parts)
 
 
-def _preview_claude_body(filepath: str, parts: list[str]) -> None:
+def _preview_claude_body(filepath: str, parts: list[str], max_turns: Optional[int] = None) -> None:
     """Append Claude Code session preview lines."""
+    cap = max_turns or 999999
     n = 0
     with open(filepath, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
@@ -1763,8 +1846,8 @@ def _preview_claude_body(filepath: str, parts: list[str]) -> None:
                 else:
                     parts.append("**Claude**")
                     parts.append(t[:2000])
-                if n >= _TURN_CAP:
-                    parts.append(f"*… {_TURN_CAP} messages shown *")
+                if n >= cap:
+                    parts.append(_TRUNCATION_NOTE)
                     break
             except Exception:
                 pass
@@ -1772,8 +1855,9 @@ def _preview_claude_body(filepath: str, parts: list[str]) -> None:
         parts.append("*No usable chat messages found in this session file.*")
 
 
-def _preview_hermes_body(filepath: str, parts: list[str]) -> None:
+def _preview_hermes_body(filepath: str, parts: list[str], max_turns: Optional[int] = None) -> None:
     """Append Hermes session preview lines."""
+    cap = max_turns or 999999
     n = 0
     with open(filepath, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
@@ -1795,7 +1879,8 @@ def _preview_hermes_body(filepath: str, parts: list[str]) -> None:
                 else:
                     parts.append("**Assistant**")
                     parts.append(t[:2000])
-                if n >= _TURN_CAP:
+                if n >= cap:
+                    parts.append(_TRUNCATION_NOTE)
                     break
             except Exception:
                 pass
@@ -1803,8 +1888,9 @@ def _preview_hermes_body(filepath: str, parts: list[str]) -> None:
         parts.append("*No usable chat messages found.*")
 
 
-def _preview_pi_body(filepath: str, parts: list[str]) -> None:
+def _preview_pi_body(filepath: str, parts: list[str], max_turns: Optional[int] = None) -> None:
     """Append PI session preview lines."""
+    cap = max_turns or 999999
     n = 0
     with open(filepath, encoding="utf-8", errors="ignore") as fh:
         for line in fh:
@@ -1829,7 +1915,8 @@ def _preview_pi_body(filepath: str, parts: list[str]) -> None:
                 else:
                     parts.append("**Assistant**")
                     parts.append(t[:2000])
-                if n >= _TURN_CAP:
+                if n >= cap:
+                    parts.append(_TRUNCATION_NOTE)
                     break
             except Exception:
                 pass
@@ -1837,12 +1924,13 @@ def _preview_pi_body(filepath: str, parts: list[str]) -> None:
         parts.append("*No usable chat messages found.*")
 
 
-def _preview_opencode(sid: str, session_file: Path) -> str:
+def _preview_opencode(sid: str, session_file: Path, max_turns: Optional[int] = None) -> str:
     return _preview_opencode_from_roots(
         sid,
         session_file,
         OPENCODE_STORAGE / "message",
         OPENCODE_STORAGE / "part",
+        max_turns,
     )
 
 
@@ -1851,6 +1939,7 @@ def _preview_opencode_from_roots(
     session_file: Path,
     message_root: Path,
     part_root: Path,
+    max_turns: Optional[int] = None,
 ) -> str:
     """Preview an Opencode session by reading its message + part files."""
     try:
@@ -1921,7 +2010,8 @@ def _preview_opencode_from_roots(
             parts.append("**Assistant**")
             parts.append(text[:2000])
 
-        if n >= _TURN_CAP:
+        if n >= (max_turns or 999999):
+            parts.append(_TRUNCATION_NOTE)
             break
 
     if n == 0:

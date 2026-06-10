@@ -48,6 +48,53 @@ from .presentation import (
 )
 
 
+# Side-pane previews render a capped number of turns so highlighting a huge
+# session while scrolling stays instant; the full transcript opens on Enter.
+_PANE_PREVIEW_TURNS = 40
+
+# Above this size, the full-session preview renders as plain text — Rich's
+# markdown parser takes >1s on very large transcripts and would freeze the UI.
+_MARKDOWN_RENDER_LIMIT = 120_000
+
+
+# Rendered-Text cache: (sid, width) → (source markdown, rendered Text).
+_TEXT_RENDER_CACHE: dict[tuple[str, int], tuple[str, RichText]] = {}
+
+
+def _preview_renderable(sid: str, md_text: str, width: int) -> RichText:
+    """Markdown→Text with caching; re-renders only when content/width change."""
+    key = (sid, width)
+    cached = _TEXT_RENDER_CACHE.get(key)
+    if cached and cached[0] == md_text:
+        return cached[1]
+    rendered = _markdown_to_text(md_text, width)
+    if len(_TEXT_RENDER_CACHE) > 500:
+        _TEXT_RENDER_CACHE.clear()
+    _TEXT_RENDER_CACHE[key] = (md_text, rendered)
+    return rendered
+
+
+def _markdown_to_text(md_text: str, width: int) -> RichText:
+    """Render markdown to a styled Text once, in the calling (worker) thread.
+
+    Rich's Markdown re-parses the source on every __rich_console__ call and
+    Textual's measure/layout invokes it several times per frame — handing the
+    UI a pre-rendered Text keeps paint time flat.
+    """
+    from rich.console import Console
+
+    console = Console(
+        width=max(20, width),
+        force_terminal=True,
+        color_system="truecolor",
+        no_color=False,
+        highlight=False,
+    )
+    with console.capture() as capture:
+        console.print(RichMarkdown(md_text))
+    return RichText.from_ansi(capture.get())
+
+
 # ── Custom list items ─────────────────────────────────────────────────────────
 
 
@@ -745,7 +792,10 @@ class SessionPreviewScreen(Screen[None]):
 
         if not term:
             self._matches = []
-            preview.update(RichMarkdown(self._raw_text))
+            if len(self._raw_text) > _MARKDOWN_RENDER_LIMIT:
+                preview.update(RichText(self._raw_text))
+            else:
+                preview.update(RichMarkdown(self._raw_text))
             case_indicator = f"[dim]case:{self._case_mode}[/dim]"
             regex_indicator = (
                 "[dim]regex[/dim]" if self._regex_mode else "[dim]literal[/dim]"
@@ -1347,12 +1397,15 @@ class BrowseScreen(Screen[None]):
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
             self._preview_timer.stop()
-        self._preview_timer = self.set_timer(0.08, lambda: self._load_preview(sid))
+        self._preview_timer = self.set_timer(0.05, lambda: self._load_preview(sid))
 
     @work(thread=True, exclusive=True)
     def _load_preview(self, sid: str) -> None:
+        width = self.query_one("#preview", Static).size.width or 80
         try:
-            renderable = RichMarkdown(preview_session(sid))
+            renderable: object = _preview_renderable(
+                sid, preview_session(sid, max_turns=_PANE_PREVIEW_TURNS), width
+            )
         except Exception as e:
             renderable = f"*Error: {e}*"
         self.app.call_from_thread(self.query_one("#preview", Static).update, renderable)
@@ -1761,12 +1814,15 @@ class ContentSearchScreen(Screen[None]):
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
             self._preview_timer.stop()
-        self._preview_timer = self.set_timer(0.08, lambda: self._load_preview(sid))
+        self._preview_timer = self.set_timer(0.05, lambda: self._load_preview(sid))
 
     @work(thread=True, exclusive=True)
     def _load_preview(self, sid: str) -> None:
+        width = self.query_one("#preview", Static).size.width or 80
         try:
-            renderable = RichMarkdown(preview_session(sid))
+            renderable: object = _preview_renderable(
+                sid, preview_session(sid, max_turns=_PANE_PREVIEW_TURNS), width
+            )
         except Exception as e:
             renderable = f"*Error: {e}*"
         self.app.call_from_thread(self.query_one("#preview", Static).update, renderable)
@@ -2001,12 +2057,15 @@ class TrashScreen(Screen[None]):
     def _update_preview(self, sid: str) -> None:
         if self._preview_timer is not None:
             self._preview_timer.stop()
-        self._preview_timer = self.set_timer(0.08, lambda: self._load_preview(sid))
+        self._preview_timer = self.set_timer(0.05, lambda: self._load_preview(sid))
 
     @work(thread=True, exclusive=True)
     def _load_preview(self, sid: str) -> None:
+        width = self.query_one("#preview", Static).size.width or 80
         try:
-            renderable = RichMarkdown(preview_session(sid))
+            renderable: object = _preview_renderable(
+                sid, preview_session(sid, max_turns=_PANE_PREVIEW_TURNS), width
+            )
         except Exception as e:
             renderable = f"*Error: {e}*"
         self.app.call_from_thread(self.query_one("#preview", Static).update, renderable)

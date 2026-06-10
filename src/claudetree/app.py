@@ -17,7 +17,7 @@ from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
 from textual.timer import Timer
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static
 
 from .backend import (
     HARNESSES,
@@ -353,34 +353,48 @@ class InputDialog(ModalScreen[str | None]):
 
 
 class ConfirmDialog(ModalScreen[bool]):
-    """Yes/No confirmation dialog."""
+    """Yes/No confirmation dialog with real buttons.
+
+    y / Enter-on-Yes confirms; n / Escape cancels; arrows/Tab move focus.
+    """
+
+    BINDINGS = [
+        Binding("y", "confirm", "Yes", show=False),
+        Binding("n", "cancel", "No", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("left,up", "focus_previous", show=False),
+        Binding("right,down", "focus_next", show=False),
+    ]
 
     DEFAULT_CSS = """
     ConfirmDialog {
         align: center middle;
-        background: $background 70%;
     }
     #dialog {
         width: 56;
-        height: 7;
-        border: round $warning;
-        background: $surface;
+        height: auto;
+        border: heavy $warning;
+        background: $panel-darken-1;
         padding: 1 2;
     }
-    #dialog Label {
+    #confirm-message {
+        width: 100%;
         margin-bottom: 1;
         color: $foreground;
     }
-    #confirm-input {
-        background: $panel-darken-2;
-        color: $text;
-        text-style: bold;
-        border: tall $warning 60%;
+    #confirm-hint {
+        width: 100%;
+        margin-bottom: 1;
+        color: $text-muted;
     }
-    #confirm-input:focus {
-        background: $boost;
-        color: $text;
-        border: tall $warning;
+    #confirm-buttons {
+        width: 100%;
+        height: auto;
+        align-horizontal: right;
+    }
+    #confirm-buttons Button {
+        margin-left: 2;
+        min-width: 12;
     }
     """
 
@@ -390,22 +404,29 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(escape(self._message))
-            yield Input(
-                placeholder="type y + Enter to confirm, Escape cancels",
-                id="confirm-input",
-            )
+            yield Label(escape(self._message), id="confirm-message")
+            yield Label("y = yes · n / Esc = cancel", id="confirm-hint")
+            with Horizontal(id="confirm-buttons"):
+                yield Button("Cancel", id="confirm-no")
+                yield Button("Delete", variant="error", id="confirm-yes")
 
     def on_mount(self) -> None:
-        self.query_one("#confirm-input", Input).focus()
+        # Default focus on the safe option
+        self.query_one("#confirm-no", Button).focus()
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        self.dismiss(event.value.strip().lower() == "y")
+    @on(Button.Pressed, "#confirm-yes")
+    def _yes(self) -> None:
+        self.dismiss(True)
 
-    def on_key(self, event) -> None:
-        if event.key == "escape":
-            event.stop()
-            self.dismiss(False)
+    @on(Button.Pressed, "#confirm-no")
+    def _no(self) -> None:
+        self.dismiss(False)
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
 
 
 class PaletteInput(Input):

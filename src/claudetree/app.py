@@ -584,25 +584,29 @@ class ContextMenuScreen(ModalScreen[str | None]):
 
     DEFAULT_CSS = """
     ContextMenuScreen {
-        background: $background 25%;
+        background: black 50%;
     }
     #ctx-menu {
-        width: 26;
-        border: round $primary;
-        background: $surface;
+        width: 24;
+        border: heavy $primary;
+        background: $panel-darken-1;
         padding: 0;
     }
     #ctx-menu ListView {
         border: none;
         padding: 0;
-        background: $surface;
+        background: $panel-darken-1;
         height: auto;
     }
     #ctx-menu ListItem {
-        padding: 0 1;
+        padding: 0 2;
+        background: $panel-darken-1;
+    }
+    #ctx-menu ListItem Label {
+        width: 100%;
     }
     #ctx-menu ListItem.--highlight {
-        background: $primary 40%;
+        background: $primary 60%;
     }
     """
 
@@ -2186,13 +2190,13 @@ class ClaudetreeApp(App[tuple[str, str] | tuple[str] | None]):
        their DEFAULT_CSS (app CSS wins at equal specificity) and blank the
        UI behind menus and dialogs. */
     ContextMenuScreen {
-        background: $background 25%;
+        background: black 50%;
     }
     InputDialog, ConfirmDialog {
-        background: $background 70%;
+        background: black 55%;
     }
     CommandPaletteScreen {
-        background: $background 78%;
+        background: black 55%;
     }
     Header {
         background: $primary-darken-2;

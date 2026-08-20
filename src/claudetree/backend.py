@@ -161,12 +161,15 @@ class Harness:
 
 
 HARNESSES: list[Harness] = [
-    Harness(SOURCE_CLAUDE,   "Claude Code", "cyan",    "★", True, ("claude",   "--resume",  "{sid}")),
-    Harness(SOURCE_OPENCODE, "Opencode",    "yellow",  "▲", True, ("opencode", "--session", "{sid}")),
-    Harness(SOURCE_COPILOT,  "Copilot",     "blue",    "◉", True, ("copilot",  "--resume={sid}")),
-    Harness(SOURCE_PI,       "PI",          "green",   "π", True, ("pi",       "--session", "{sid}")),
-    Harness(SOURCE_HERMES,   "Hermes",      "magenta", "⚡", True, ("hermes",   "--resume",  "{sid}")),
-    Harness(SOURCE_CODEX,    "Codex",       "white",   "◆", True, ("codex",    "resume",    "{sid}")),
+    # Each resume command includes the harness's equivalent of "yolo" /
+    # "bypass permissions" flag so resumed sessions skip confirmation prompts.
+    # Terms are harness-dependent; flags verified against each CLI's --help.
+    Harness(SOURCE_CLAUDE,   "Claude Code", "cyan",    "★", True, ("claude",   "--resume",  "{sid}", "--dangerously-skip-permissions")),
+    Harness(SOURCE_OPENCODE, "Opencode",    "yellow",  "▲", True, ("opencode", "--session", "{sid}")),  # no --yolo equivalent found
+    Harness(SOURCE_COPILOT,  "Copilot",     "blue",    "◉", True, ("copilot",  "--resume={sid}")),       # no --yolo equivalent found
+    Harness(SOURCE_PI,       "PI",          "green",   "π", True, ("pi",       "--session", "{sid}", "--approve")),
+    Harness(SOURCE_HERMES,   "Hermes",      "magenta", "⚡", True, ("hermes",   "--resume",  "{sid}", "--yolo")),
+    Harness(SOURCE_CODEX,    "Codex",       "white",   "◆", True, ("codex",    "--dangerously-bypass-approvals-and-sandbox", "resume", "{sid}")),
 ]
 
 HARNESS_MAP: dict[str, Harness] = {h.id: h for h in HARNESSES}

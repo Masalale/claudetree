@@ -189,11 +189,12 @@ def test_resume_command_templates(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     backend = _load_backend_with_home(tmp_path)
     cmds = {h.id: h.build_resume_cmd("SID") for h in backend.HARNESSES}
-    assert cmds["claude"] == ["claude", "--resume", "SID"]
+    assert cmds["claude"] == ["claude", "--resume", "SID", "--dangerously-skip-permissions"]
     assert cmds["opencode"] == ["opencode", "--session", "SID"]
     assert cmds["copilot"] == ["copilot", "--resume=SID"]
-    assert cmds["pi"] == ["pi", "--session", "SID"]
-    assert cmds["hermes"] == ["hermes", "--resume", "SID"]
+    assert cmds["pi"] == ["pi", "--session", "SID", "--approve"]
+    assert cmds["hermes"] == ["hermes", "--resume", "SID", "--yolo"]
+    assert cmds["codex"] == ["codex", "--dangerously-bypass-approvals-and-sandbox", "resume", "SID"]
 
 
 def test_pi_trash_and_restore_roundtrip(tmp_path, monkeypatch):
@@ -327,9 +328,9 @@ def test_resume_command_resolver(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     backend = _load_backend_with_home(tmp_path)
 
-    assert backend.resume_command("SID", "claude") == ["claude", "--resume", "SID"]
+    assert backend.resume_command("SID", "claude") == ["claude", "--resume", "SID", "--dangerously-skip-permissions"]
     assert backend.resume_command("SID", "copilot") == ["copilot", "--resume=SID"]
-    assert backend.resume_command("SID", "codex") == ["codex", "resume", "SID"]
+    assert backend.resume_command("SID", "codex") == ["codex", "--dangerously-bypass-approvals-and-sandbox", "resume", "SID"]
     assert backend.resume_command("SID", "nonexistent-harness") is None
 
 
